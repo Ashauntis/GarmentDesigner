@@ -1,0 +1,134 @@
+:root {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: #e9ecef;
+  background: radial-gradient(circle at top left, #2a3950 0%, #101822 55%, #0a1017 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 300px 1fr 340px;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 12px;
+  position: relative;
+}
+
+.panel {
+  background: rgba(11, 17, 24, 0.88);
+  border: 1px solid #253649;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+h1 {
+  margin-top: 0;
+  font-size: 1.2rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.project-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.project-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.primary-btn,
+.danger-btn,
+.link-btn,
+.tabs button {
+  border: 1px solid #44607b;
+  border-radius: 6px;
+  background: #172332;
+  color: #e9ecef;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.primary-btn:hover,
+.danger-btn:hover,
+.link-btn:hover,
+.tabs button:hover {
+  background: #233549;
+}
+
+.danger-btn {
+  border-color: #8b3a3a;
+}
+
+.link-btn {
+  flex: 1;
+  text-align: left;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.active-tab {
+  background: #305072;
+}
+
+.chart-placeholder {
+  border: 1px dashed #44607b;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 12px;
+}
+
+input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid #395069;
+  background: #121e2b;
+  color: #eef2f7;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.error-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  border: 1px solid #9b3131;
+  background: #3b1919;
+  color: #ffd5d5;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+@media (max-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+}

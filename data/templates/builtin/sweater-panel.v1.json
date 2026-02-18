@@ -1,0 +1,29 @@
+{
+  "id": "tpl_sweater_panel_builtin_v1",
+  "schemaVersion": 1,
+  "createdAt": "2026-02-18T00:00:00.000Z",
+  "updatedAt": "2026-02-18T00:00:00.000Z",
+  "name": "Sweater Panel",
+  "garmentType": "sweater_panel",
+  "isBuiltin": true,
+  "basedOnTemplateId": null,
+  "geometryCm": {
+    "points": [
+      { "id": "p1", "x": 0, "y": 0 },
+      { "id": "p2", "x": 50, "y": 0 },
+      { "id": "p3", "x": 50, "y": 60 },
+      { "id": "p4", "x": 0, "y": 60 }
+    ],
+    "edges": [
+      { "id": "e1", "p1": "p1", "p2": "p2", "label": "hem" },
+      { "id": "e2", "p1": "p2", "p2": "p3", "label": "side_right" },
+      { "id": "e3", "p1": "p3", "p2": "p4", "label": "neckline" },
+      { "id": "e4", "p1": "p4", "p2": "p1", "label": "side_left" }
+    ],
+    "sections": [{ "id": "s1", "name": "body", "pointLoop": ["p1", "p2", "p3", "p4"] }],
+    "constraints": [
+      { "type": "mirrorX", "leftPointId": "p1", "rightPointId": "p2", "axisX": 25 },
+      { "type": "mirrorX", "leftPointId": "p4", "rightPointId": "p3", "axisX": 25 }
+    ]
+  }
+}

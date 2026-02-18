@@ -1,0 +1,28 @@
+{
+  "id": "tpl_sleeve_builtin_v1",
+  "schemaVersion": 1,
+  "createdAt": "2026-02-18T00:00:00.000Z",
+  "updatedAt": "2026-02-18T00:00:00.000Z",
+  "name": "Sleeve",
+  "garmentType": "sleeve",
+  "isBuiltin": true,
+  "basedOnTemplateId": null,
+  "geometryCm": {
+    "points": [
+      { "id": "p1", "x": 0, "y": 0 },
+      { "id": "p2", "x": 20, "y": 0 },
+      { "id": "p3", "x": 32, "y": 58 },
+      { "id": "p4", "x": -12, "y": 58 }
+    ],
+    "edges": [
+      { "id": "e1", "p1": "p1", "p2": "p2", "label": "cuff" },
+      { "id": "e2", "p1": "p2", "p2": "p3", "label": "increase_right" },
+      { "id": "e3", "p1": "p3", "p2": "p4", "label": "armhole" },
+      { "id": "e4", "p1": "p4", "p2": "p1", "label": "increase_left" }
+    ],
+    "sections": [{ "id": "s1", "name": "sleeve_panel", "pointLoop": ["p1", "p2", "p3", "p4"] }],
+    "constraints": [
+      { "type": "mirrorX", "leftPointId": "p4", "rightPointId": "p3", "axisX": 10 }
+    ]
+  }
+}
