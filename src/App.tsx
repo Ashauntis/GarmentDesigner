@@ -4,7 +4,6 @@ import { applyRounding } from "./domain/rounding";
 import { storageApi } from "./storage/ipc";
 import type {
   AppPreferences,
-  Edge,
   GaugeProfile,
   GaugeProfileSnapshot,
   Geometry,
@@ -75,9 +74,8 @@ function round2(value: number): number {
 
 function cloneGeometry(geometry?: Geometry): Geometry {
   if (!geometry) {
-    return { ...emptyGeometry };
+    return { points: [], edges: [], sections: [], constraints: [] };
   }
-
   return {
     points: geometry.points.map((point) => ({ ...point })),
     edges: geometry.edges.map((edge) => ({ ...edge })),
@@ -87,10 +85,7 @@ function cloneGeometry(geometry?: Geometry): Geometry {
 }
 
 function hasGeometry(geometry?: Geometry): boolean {
-  if (!geometry) {
-    return false;
-  }
-  return geometry.points.length > 0 && geometry.edges.length > 0;
+  return Boolean(geometry && geometry.points.length > 0 && geometry.edges.length > 0);
 }
 
 function defaultPreferences(): AppPreferences {
@@ -259,17 +254,6 @@ function parseOptionalNumber(value: string): number | null {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function edgeLength(edge: Edge, pointById: Map<string, Point>): number {
-  const p1 = pointById.get(edge.p1);
-  const p2 = pointById.get(edge.p2);
-  if (!p1 || !p2) {
-    return 0;
-  }
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  return Math.sqrt(dx * dx + dy * dy);
 }
 
 function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
@@ -445,12 +429,8 @@ function generateSectionInstructions(args: {
 
 function recalculateProject(project: Project, verbosity: InstructionVerbosity): Project {
   const pointMap = new Map(project.geometryOverrideCm.points.map((point) => [point.id, point]));
-  const stitchesPer10Cm = project.gaugeProfileSnapshot?.stitchesPer10Cm && project.gaugeProfileSnapshot.stitchesPer10Cm > 0
-    ? project.gaugeProfileSnapshot.stitchesPer10Cm
-    : 20;
-  const rowsPer10Cm = project.gaugeProfileSnapshot?.rowsPer10Cm && project.gaugeProfileSnapshot.rowsPer10Cm > 0
-    ? project.gaugeProfileSnapshot.rowsPer10Cm
-    : 28;
+  const stitchesPer10Cm = project.gaugeProfileSnapshot?.stitchesPer10Cm || 20;
+  const rowsPer10Cm = project.gaugeProfileSnapshot?.rowsPer10Cm || 28;
 
   const edgeStitches = project.geometryOverrideCm.edges.map((edge) => {
     const p1 = pointMap.get(edge.p1);
@@ -498,7 +478,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
 
   let rowCursor = 2;
   let currentStitches = firstTarget;
-  sectionPlans.forEach((plan) => {
+  for (const plan of sectionPlans) {
     const generated = generateSectionInstructions({
       sectionId: plan.sectionId,
       rowTargets: plan.rowTargets,
@@ -509,7 +489,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     instructions.push(...generated.instructions);
     rowCursor = generated.endRow + 1;
     currentStitches = generated.endingStitches;
-  });
+  }
 
   instructions.push({
     id: "",
@@ -525,10 +505,10 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
 
   const nextCompletedRowsBySection: Record<string, number> = {};
   const nextActivePartialBySection: Project["progress"]["activePartialRowBySection"] = {};
-  sectionRows.forEach((section) => {
-    nextCompletedRowsBySection[section.sectionId] = Math.max(project.progress.completedRowsBySection[section.sectionId] ?? 0, 0);
+  for (const section of sectionRows) {
+    nextCompletedRowsBySection[section.sectionId] = project.progress.completedRowsBySection[section.sectionId] ?? 0;
     nextActivePartialBySection[section.sectionId] = project.progress.activePartialRowBySection[section.sectionId] ?? null;
-  });
+  }
 
   return {
     ...project,
@@ -583,11 +563,10 @@ export default function App() {
     [gaugeProfiles, selectedGaugeProfileId]
   );
 
-  const pointById = useMemo(() => {
-    const map = new Map<string, Point>();
-    activeProject?.geometryOverrideCm.points.forEach((point) => map.set(point.id, point));
-    return map;
-  }, [activeProject?.geometryOverrideCm.points]);
+  const pointById = useMemo(
+    () => new Map(activeProject?.geometryOverrideCm.points.map((point) => [point.id, point]) ?? []),
+    [activeProject?.geometryOverrideCm.points]
+  );
 
   const activeGeometry = activeProject?.geometryOverrideCm ?? emptyGeometry;
 
@@ -665,11 +644,7 @@ export default function App() {
   }, [activeProject?.id]);
 
   useEffect(() => {
-    if (activeTemplate) {
-      setTemplateNameDraft(activeTemplate.name);
-    } else {
-      setTemplateNameDraft("");
-    }
+    setTemplateNameDraft(activeTemplate?.name ?? "");
   }, [activeProject?.id, activeTemplate?.id, activeTemplate?.name]);
 
   async function handleCreateProject() {
@@ -912,7 +887,9 @@ export default function App() {
       return;
     }
     setSelectedEdgeId(edge.id);
-    setEdgeLengthInput(edgeLength(edge, pointById).toFixed(2));
+    const p1 = pointById.get(edge.p1);
+    const p2 = pointById.get(edge.p2);
+    setEdgeLengthInput(p1 && p2 ? cmDistance(p1, p2).toFixed(2) : "0");
     setEdgeEditorError("");
   }
 
@@ -921,12 +898,11 @@ export default function App() {
       setEdgeEditorError("Select an edge first.");
       return;
     }
-    const maybeLength = parseOptionalNumber(edgeLengthInput);
-    if (maybeLength === null || maybeLength <= 0) {
+    const targetLength = parseOptionalNumber(edgeLengthInput);
+    if (targetLength === null || targetLength <= 0) {
       setEdgeEditorError("Length must be a positive number.");
       return;
     }
-    const targetLength = maybeLength;
     setEdgeEditorError("");
 
     setActiveProject((previous) => {
