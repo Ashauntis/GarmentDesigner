@@ -18,6 +18,14 @@ Build a local-first knitting garment design app that supports:
 4. Rounding policy is configurable (mode + step), not hardcoded.
 5. Template editing is copy-on-write (never overwrite source template).
 6. Colorwork generation requires a selected gauge profile and palette.
+7. Project stores embedded profile snapshots (person + gauge) so each project remains standalone.
+8. Progress tracks:
+   - completed full rows by section
+   - completed stitches in the currently active partial row by section
+9. Geometry uses a screen-aligned Cartesian plane:
+   - origin is top-left of template-local bounds
+   - `+x` moves right, `+y` moves down
+   - negative coordinates are allowed during editing
 
 ## 3) Architecture (MVP)
 
@@ -190,8 +198,25 @@ All persisted files include:
   "updatedAt": "2026-02-18T00:00:00.000Z",
   "name": "Blue Raglan",
   "templateId": "tpl_sweater_panel_user_013",
-  "personProfileId": "person_01",
-  "gaugeProfileId": "gauge_01",
+  "personProfileSnapshot": {
+    "sourceProfileId": "person_01",
+    "sourceProfileUpdatedAt": "2026-02-18T00:00:00.000Z",
+    "name": "Client A",
+    "measurementsCm": {
+      "bustCircumference": 96.5,
+      "waistCircumference": 78.0,
+      "hipCircumference": 102.0
+    }
+  },
+  "gaugeProfileSnapshot": {
+    "sourceProfileId": "gauge_01",
+    "sourceProfileUpdatedAt": "2026-02-18T00:00:00.000Z",
+    "name": "Worsted 5mm stockinette",
+    "stitchesPer10Cm": 20,
+    "rowsPer10Cm": 28,
+    "needle": "US 8 / 5.0mm",
+    "notes": "Blocked swatch"
+  },
   "paletteId": "palette_01",
   "displayUnit": "in",
   "roundingPolicy": {
@@ -237,7 +262,13 @@ All persisted files include:
   ],
   "progress": {
     "completedRowsBySection": {
-      "s1": [1, 2, 3, 4, 5]
+      "s1": 5
+    },
+    "activePartialRowBySection": {
+      "s1": {
+        "rowNumber": 6,
+        "completedStitches": 14
+      }
     }
   }
 }
@@ -302,6 +333,19 @@ Examples:
    - max colors OR explicit yarn subset from palette
 4. `transparent` cell is allowed and means "fall back to section default yarn."
 
+## 6.6 Geometry Conventions
+
+1. Geometry coordinates are template-local and stored in `cm`.
+2. Origin (`0,0`) is top-left of the template-local bounding box.
+3. Axes:
+   - `+x`: right
+   - `+y`: down
+4. Negative coordinates are allowed during editing and rendering.
+5. Constraint solve order for MVP:
+   - apply direct point drag/input
+   - apply mirror constraints in declaration order
+   - persist resulting point coordinates
+
 ## 7) MVP Epics and Acceptance Criteria
 
 ## Epic A: JSON Storage Foundation
@@ -335,17 +379,19 @@ Acceptance criteria:
 Acceptance criteria:
 
 1. Person and gauge profiles can be created and reused across projects.
-2. Applying profile updates target geometry and derived counts.
-3. Stitch/row counts match conversion + rounding rules exactly.
+2. Applying profile selection writes embedded person/gauge snapshots into project JSON.
+3. Derivation always uses embedded snapshots in project file.
+4. Stitch/row counts match conversion + rounding rules exactly.
 
 ## Epic E: Instruction Generation + Progress
 
 Acceptance criteria:
 
 1. App generates row/group instructions from current geometry + gauge.
-2. User can mark rows complete per section.
-3. Completed state reflects in instructions and chart.
-4. Completed row state persists after save/reopen.
+2. User can mark completed full rows per section.
+3. User can track completed stitches for a single active partial row per section.
+4. Completed state reflects in instructions and chart.
+5. Progress state persists after save/reopen.
 
 ## Epic F: Colorwork MVP
 
@@ -372,4 +418,3 @@ Acceptance criteria:
 3. Multi-size grading in one project file.
 4. Cloud sync/collaboration.
 5. Yarn inventory forecasting beyond simple `availableMeters`.
-

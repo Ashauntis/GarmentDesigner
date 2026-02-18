@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld("desktopApi", {
     loadProject: (projectId) => ipcRenderer.invoke("storage:load-project", projectId),
     saveProject: (project) => ipcRenderer.invoke("storage:save-project", project),
     deleteProject: (projectId) => ipcRenderer.invoke("storage:delete-project", projectId),
-    listTemplates: () => ipcRenderer.invoke("storage:list-templates")
+    listTemplates: () => ipcRenderer.invoke("storage:list-templates"),
+    listProfiles: (kind) => ipcRenderer.invoke("storage:list-profiles", kind),
+    saveProfile: (kind, profile) => ipcRenderer.invoke("storage:save-profile", kind, profile),
+    deleteProfile: (kind, profileId) => ipcRenderer.invoke("storage:delete-profile", kind, profileId),
+    getPreferences: () => ipcRenderer.invoke("storage:get-preferences"),
+    savePreferences: (preferences) => ipcRenderer.invoke("storage:save-preferences", preferences)
   }
 });

@@ -14,19 +14,21 @@ Use Electron + React for the initial MVP. Keep React Native out of scope until m
 
 ## Gaps to close before implementation expands
 
-1. Define coordinate system and orientation rules for geometry:
-   - origin location
-   - y-direction
-   - whether points can go negative
-2. Define schema migration contract now (even before SQLite):
+1. Define schema migration contract now (even before SQLite):
    - file with higher version is blocked
    - file with lower version runs deterministic migration chain
-3. Clarify profile linkage semantics:
-   - project references profile IDs
-   - project keeps snapshots for reproducibility
-4. Lock row completion granularity:
-   - set-of-rows vs max-completed-row behavior for instructions + charts
-5. Add test vectors for gauge + rounding examples from spec to prevent regressions.
+2. Add test vectors for gauge + rounding examples from spec to prevent regressions.
+
+## Decisions now locked
+
+1. Profile snapshots are embedded in project files (person + gauge).
+2. Progress is stored as:
+   - completed full rows by section
+   - active partial row stitches by section
+3. Geometry convention:
+   - origin at top-left of template-local bounds
+   - `+x` right, `+y` down
+   - negative coordinates allowed
 
 ## Platform decision notes
 

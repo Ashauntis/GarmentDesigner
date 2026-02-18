@@ -18,6 +18,11 @@ export interface RoundingPolicy {
   row: RoundingRule;
 }
 
+export interface AppPreferences extends Metadata {
+  displayUnit: DisplayUnit;
+  defaultRounding: RoundingPolicy;
+}
+
 export interface Point {
   id: string;
   x: number;
@@ -57,11 +62,33 @@ export interface ProjectInstruction {
   text: string;
 }
 
+export interface PersonProfileSnapshot {
+  sourceProfileId: string | null;
+  sourceProfileUpdatedAt: string | null;
+  name: string;
+  measurementsCm: Record<string, number>;
+}
+
+export interface GaugeProfileSnapshot {
+  sourceProfileId: string | null;
+  sourceProfileUpdatedAt: string | null;
+  name: string;
+  stitchesPer10Cm: number;
+  rowsPer10Cm: number;
+  needle: string;
+  notes?: string;
+}
+
+export interface PartialRowProgress {
+  rowNumber: number;
+  completedStitches: number;
+}
+
 export interface Project extends Metadata {
   name: string;
   templateId: string;
-  personProfileId?: string;
-  gaugeProfileId?: string;
+  personProfileSnapshot?: PersonProfileSnapshot;
+  gaugeProfileSnapshot?: GaugeProfileSnapshot;
   paletteId?: string;
   displayUnit: DisplayUnit;
   roundingPolicy: RoundingPolicy;
@@ -77,7 +104,8 @@ export interface Project extends Metadata {
   };
   instructions: ProjectInstruction[];
   progress: {
-    completedRowsBySection: Record<string, number[]>;
+    completedRowsBySection: Record<string, number>;
+    activePartialRowBySection: Record<string, PartialRowProgress | null>;
   };
 }
 
@@ -86,3 +114,18 @@ export interface ProjectSummary {
   name: string;
   updatedAt: string;
 }
+
+export interface PersonProfile extends Metadata {
+  name: string;
+  measurementsCm: Record<string, number>;
+}
+
+export interface GaugeProfile extends Metadata {
+  name: string;
+  stitchesPer10Cm: number;
+  rowsPer10Cm: number;
+  needle: string;
+  notes?: string;
+}
+
+export type ProfileKind = "person" | "gauge";
