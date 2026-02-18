@@ -42,17 +42,19 @@ export interface Section {
   pointLoop: string[];
 }
 
+export interface Geometry {
+  points: Point[];
+  edges: Edge[];
+  sections: Section[];
+  constraints: Record<string, unknown>[];
+}
+
 export interface Template extends Metadata {
   name: string;
   garmentType: string;
   isBuiltin: boolean;
   basedOnTemplateId: string | null;
-  geometryCm: {
-    points: Point[];
-    edges: Edge[];
-    sections: Section[];
-    constraints: Record<string, unknown>[];
-  };
+  geometryCm: Geometry;
 }
 
 export interface ProjectInstruction {
@@ -92,12 +94,7 @@ export interface Project extends Metadata {
   paletteId?: string;
   displayUnit: DisplayUnit;
   roundingPolicy: RoundingPolicy;
-  geometryOverrideCm: {
-    points: Point[];
-    edges: Edge[];
-    sections: Section[];
-    constraints: Record<string, unknown>[];
-  };
+  geometryOverrideCm: Geometry;
   derived: {
     edgeStitches: Array<{ edgeId: string; count: number }>;
     sectionRows: Array<{ sectionId: string; count: number }>;

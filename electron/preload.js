@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
     saveProject: (project) => ipcRenderer.invoke("storage:save-project", project),
     deleteProject: (projectId) => ipcRenderer.invoke("storage:delete-project", projectId),
     listTemplates: () => ipcRenderer.invoke("storage:list-templates"),
+    saveTemplate: (template) => ipcRenderer.invoke("storage:save-template", template),
+    deleteTemplate: (templateId) => ipcRenderer.invoke("storage:delete-template", templateId),
     listProfiles: (kind) => ipcRenderer.invoke("storage:list-profiles", kind),
     saveProfile: (kind, profile) => ipcRenderer.invoke("storage:save-profile", kind, profile),
     deleteProfile: (kind, profileId) => ipcRenderer.invoke("storage:delete-profile", kind, profileId),

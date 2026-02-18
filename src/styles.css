@@ -113,6 +113,75 @@ body {
   font-size: 0.95rem;
 }
 
+.canvas-wrap {
+  border: 1px solid #334a65;
+  border-radius: 10px;
+  background: #0d1622;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.design-canvas {
+  width: 100%;
+  height: 480px;
+  display: block;
+}
+
+.section-shape {
+  fill: rgba(103, 167, 212, 0.14);
+  stroke: rgba(103, 167, 212, 0.45);
+  stroke-width: 0.3;
+}
+
+.edge-line {
+  stroke: #88a5c6;
+  stroke-width: 0.75;
+  pointer-events: none;
+}
+
+.edge-hit {
+  stroke: transparent;
+  stroke-width: 12;
+  cursor: pointer;
+}
+
+.edge-line.selected {
+  stroke: #ffbe78;
+  stroke-width: 1.15;
+}
+
+.edge-label {
+  fill: #d8e8f9;
+  stroke: rgba(10, 20, 32, 0.65);
+  stroke-width: 0.1px;
+  paint-order: stroke;
+  font-size: 4.8px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.point-hit {
+  fill: transparent;
+  cursor: grab;
+}
+
+.point-node {
+  fill: #f6fbff;
+  stroke: #264b74;
+  stroke-width: 0.45;
+  pointer-events: none;
+}
+
+.point-label {
+  fill: #e6f1fd;
+  stroke: rgba(10, 20, 32, 0.65);
+  stroke-width: 0.1px;
+  paint-order: stroke;
+  font-size: 4.8px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
 label {
   display: block;
   margin-bottom: 10px;
@@ -159,6 +228,14 @@ select {
   padding: 8px 10px;
 }
 
+.link-btn:disabled,
+.primary-btn:disabled,
+.secondary-btn:disabled,
+.danger-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .link-btn {
   text-align: left;
   flex: 1;
@@ -192,6 +269,18 @@ select {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed #334861;
+}
+
+.field-error {
+  margin: 0 0 10px;
+  color: #ff9a9a;
+  font-size: 0.9rem;
+}
+
+.field-note {
+  margin: 0 0 10px;
+  color: #9bd2ff;
+  font-size: 0.9rem;
 }
 
 .error-banner {

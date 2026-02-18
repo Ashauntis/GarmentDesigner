@@ -7,6 +7,8 @@ export const storageApi = {
   saveProject: (project: Project): Promise<Project> => window.desktopApi.storage.saveProject(project),
   deleteProject: (projectId: string): Promise<void> => window.desktopApi.storage.deleteProject(projectId),
   listTemplates: (): Promise<Template[]> => window.desktopApi.storage.listTemplates(),
+  saveTemplate: (template: Template): Promise<Template> => window.desktopApi.storage.saveTemplate(template),
+  deleteTemplate: (templateId: string): Promise<void> => window.desktopApi.storage.deleteTemplate(templateId),
   listProfiles: (kind: ProfileKind): Promise<Array<PersonProfile | GaugeProfile>> => window.desktopApi.storage.listProfiles(kind),
   saveProfile: (kind: ProfileKind, profile: PersonProfile | GaugeProfile): Promise<PersonProfile | GaugeProfile> =>
     window.desktopApi.storage.saveProfile(kind, profile),

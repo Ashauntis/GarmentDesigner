@@ -36,6 +36,8 @@ function registerIpcHandlers() {
   ipcMain.handle("storage:save-project", async (_event, project) => storage.saveProject(project));
   ipcMain.handle("storage:delete-project", async (_event, projectId) => storage.deleteProject(projectId));
   ipcMain.handle("storage:list-templates", async () => storage.listTemplates());
+  ipcMain.handle("storage:save-template", async (_event, template) => storage.saveTemplate(template));
+  ipcMain.handle("storage:delete-template", async (_event, templateId) => storage.deleteTemplate(templateId));
   ipcMain.handle("storage:list-profiles", async (_event, kind) => storage.listProfiles(kind));
   ipcMain.handle("storage:save-profile", async (_event, kind, profile) => storage.saveProfile(kind, profile));
   ipcMain.handle("storage:delete-profile", async (_event, kind, profileId) => storage.deleteProfile(kind, profileId));

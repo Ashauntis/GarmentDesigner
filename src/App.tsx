@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { deriveGaugeCounts } from "./domain/gauge";
+import { applyRounding } from "./domain/rounding";
 import { storageApi } from "./storage/ipc";
 import type {
   AppPreferences,
+  Edge,
   GaugeProfile,
   GaugeProfileSnapshot,
+  Geometry,
   PersonProfile,
   PersonProfileSnapshot,
+  Point,
   Project,
   ProjectSummary,
   RoundingMode,
@@ -14,6 +18,11 @@ import type {
 } from "./types/models";
 
 type Screen = "projects" | "profiles" | "design" | "instructions" | "settings";
+
+interface DragState {
+  pointId: string;
+  pointerId: number;
+}
 
 interface PersonFormState {
   id?: string;
@@ -48,8 +57,39 @@ const navigation: Array<{ screen: Screen; glyph: string; label: string }> = [
   { screen: "settings", glyph: "ST", label: "Settings" }
 ];
 
+const emptyGeometry: Geometry = {
+  points: [],
+  edges: [],
+  sections: [],
+  constraints: []
+};
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function cloneGeometry(geometry?: Geometry): Geometry {
+  if (!geometry) {
+    return { ...emptyGeometry };
+  }
+
+  return {
+    points: geometry.points.map((point) => ({ ...point })),
+    edges: geometry.edges.map((edge) => ({ ...edge })),
+    sections: geometry.sections.map((section) => ({ ...section, pointLoop: [...section.pointLoop] })),
+    constraints: geometry.constraints.map((constraint) => ({ ...constraint }))
+  };
+}
+
+function hasGeometry(geometry?: Geometry): boolean {
+  if (!geometry) {
+    return false;
+  }
+  return geometry.points.length > 0 && geometry.edges.length > 0;
 }
 
 function defaultPreferences(): AppPreferences {
@@ -123,6 +163,17 @@ function gaugeSnapshotFromProfile(profile?: GaugeProfile): GaugeProfileSnapshot 
   };
 }
 
+function hydrateProjectGeometry(project: Project, templates: Template[]): Project {
+  if (hasGeometry(project.geometryOverrideCm)) {
+    return project;
+  }
+  const template = templates.find((entry) => entry.id === project.templateId);
+  return {
+    ...project,
+    geometryOverrideCm: cloneGeometry(template?.geometryCm)
+  };
+}
+
 function buildProjectDraft(input: {
   template?: Template;
   projectName: string;
@@ -143,7 +194,7 @@ function buildProjectDraft(input: {
     input.preferences.defaultRounding
   );
 
-  return {
+  const draft: Project = {
     id,
     schemaVersion: 1,
     createdAt: timestamp,
@@ -154,12 +205,7 @@ function buildProjectDraft(input: {
     gaugeProfileSnapshot: gaugeSnapshot,
     displayUnit: input.preferences.displayUnit,
     roundingPolicy: input.preferences.defaultRounding,
-    geometryOverrideCm: {
-      points: [],
-      edges: [],
-      sections: [],
-      constraints: []
-    },
+    geometryOverrideCm: cloneGeometry(input.template?.geometryCm),
     derived: {
       edgeStitches: [{ edgeId: "preview_edge", count: gaugePreview.stitches }],
       sectionRows: [{ sectionId: "preview_section", count: gaugePreview.rows }]
@@ -173,14 +219,12 @@ function buildProjectDraft(input: {
       }
     ],
     progress: {
-      completedRowsBySection: {
-        preview_section: 0
-      },
-      activePartialRowBySection: {
-        preview_section: null
-      }
+      completedRowsBySection: {},
+      activePartialRowBySection: {}
     }
   };
+
+  return recalculateProject(draft);
 }
 
 function emptyPersonForm(): PersonFormState {
@@ -207,6 +251,256 @@ function parseNumber(value: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseOptionalNumber(value: string): number | null {
+  if (value.trim() === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function edgeLength(edge: Edge, pointById: Map<string, Point>): number {
+  const p1 = pointById.get(edge.p1);
+  const p2 = pointById.get(edge.p2);
+  if (!p1 || !p2) {
+    return 0;
+  }
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) {
+    return { x: 0, y: 0 };
+  }
+  const transformed = point.matrixTransform(ctm.inverse());
+  return { x: transformed.x, y: transformed.y };
+}
+
+function cmDistance(p1: Point, p2: Point): number {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function sectionWidthAtY(points: Point[], y: number): number {
+  if (points.length < 3) {
+    return 0;
+  }
+
+  const intersections: number[] = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % points.length];
+    if (p1.y === p2.y) {
+      continue;
+    }
+
+    const minY = Math.min(p1.y, p2.y);
+    const maxY = Math.max(p1.y, p2.y);
+    if (y < minY || y >= maxY) {
+      continue;
+    }
+
+    const ratio = (y - p1.y) / (p2.y - p1.y);
+    const x = p1.x + ratio * (p2.x - p1.x);
+    intersections.push(x);
+  }
+
+  if (intersections.length < 2) {
+    const xs = points.map((point) => point.x);
+    return Math.max(...xs) - Math.min(...xs);
+  }
+
+  intersections.sort((a, b) => a - b);
+  return intersections[intersections.length - 1] - intersections[0];
+}
+
+function rowTargetsForSection(args: {
+  points: Point[];
+  stitchesPer10Cm: number;
+  rowsPer10Cm: number;
+  roundingPolicy: Project["roundingPolicy"];
+}): { rowCount: number; targets: number[] } {
+  const { points, stitchesPer10Cm, rowsPer10Cm, roundingPolicy } = args;
+  if (points.length < 3) {
+    return { rowCount: Math.max(roundingPolicy.row.step, 1), targets: [Math.max(roundingPolicy.stitch.step, 1)] };
+  }
+
+  const ys = points.map((point) => point.y);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const heightCm = Math.max(maxY - minY, 0.01);
+  const rowCount = applyRounding((heightCm / 10) * rowsPer10Cm, roundingPolicy.row.mode, roundingPolicy.row.step);
+
+  const targets: number[] = [];
+  for (let i = 0; i < rowCount; i += 1) {
+    const y = minY + ((i + 0.5) / rowCount) * heightCm;
+    const widthCm = Math.max(sectionWidthAtY(points, y), 0.01);
+    const rawStitches = (widthCm / 10) * stitchesPer10Cm;
+    targets.push(applyRounding(rawStitches, roundingPolicy.stitch.mode, roundingPolicy.stitch.step));
+  }
+
+  return {
+    rowCount,
+    targets
+  };
+}
+
+function generateSectionInstructions(
+  sectionId: string,
+  rowTargets: number[],
+  startRow: number
+): { instructions: Project["instructions"]; endRow: number } {
+  if (rowTargets.length === 0) {
+    return { instructions: [], endRow: startRow - 1 };
+  }
+
+  const instructions: Project["instructions"] = [];
+  let currentStitches = rowTargets[0];
+  let spanStart = startRow;
+
+  for (let i = 1; i < rowTargets.length; i += 1) {
+    const rowNumber = startRow + i;
+    const next = rowTargets[i];
+    if (next === currentStitches) {
+      continue;
+    }
+
+    const spanEnd = rowNumber - 1;
+    if (spanStart <= spanEnd) {
+      instructions.push({
+        id: "",
+        rowStart: spanStart,
+        rowEnd: spanEnd,
+        text: `Work even at ${currentStitches} stitches (${sectionId})`
+      });
+    }
+
+    const delta = next - currentStitches;
+    const action = delta > 0 ? "Increase" : "Decrease";
+    instructions.push({
+      id: "",
+      rowStart: rowNumber,
+      rowEnd: rowNumber,
+      text: `${action} ${Math.abs(delta)} stitch${Math.abs(delta) === 1 ? "" : "es"} to ${next} stitches (${sectionId})`
+    });
+
+    currentStitches = next;
+    spanStart = rowNumber + 1;
+  }
+
+  const endRow = startRow + rowTargets.length - 1;
+  if (spanStart <= endRow) {
+    instructions.push({
+      id: "",
+      rowStart: spanStart,
+      rowEnd: endRow,
+      text: `Work even at ${currentStitches} stitches (${sectionId})`
+    });
+  }
+
+  return { instructions, endRow };
+}
+
+function recalculateProject(project: Project): Project {
+  const pointMap = new Map(project.geometryOverrideCm.points.map((point) => [point.id, point]));
+  const stitchesPer10Cm = project.gaugeProfileSnapshot?.stitchesPer10Cm && project.gaugeProfileSnapshot.stitchesPer10Cm > 0
+    ? project.gaugeProfileSnapshot.stitchesPer10Cm
+    : 20;
+  const rowsPer10Cm = project.gaugeProfileSnapshot?.rowsPer10Cm && project.gaugeProfileSnapshot.rowsPer10Cm > 0
+    ? project.gaugeProfileSnapshot.rowsPer10Cm
+    : 28;
+
+  const edgeStitches = project.geometryOverrideCm.edges.map((edge) => {
+    const p1 = pointMap.get(edge.p1);
+    const p2 = pointMap.get(edge.p2);
+    const cm = p1 && p2 ? cmDistance(p1, p2) : 0;
+    const raw = (cm / 10) * stitchesPer10Cm;
+    return {
+      edgeId: edge.id,
+      count: applyRounding(raw, project.roundingPolicy.stitch.mode, project.roundingPolicy.stitch.step)
+    };
+  });
+
+  const sectionPlans = project.geometryOverrideCm.sections.map((section) => {
+    const points = section.pointLoop.map((id) => pointMap.get(id)).filter(Boolean) as Point[];
+    const { rowCount, targets } = rowTargetsForSection({
+      points,
+      stitchesPer10Cm,
+      rowsPer10Cm,
+      roundingPolicy: project.roundingPolicy
+    });
+    return {
+      sectionId: section.id,
+      rowCount,
+      rowTargets: targets
+    };
+  });
+
+  const sectionRows = sectionPlans.map((plan) => ({
+    sectionId: plan.sectionId,
+    count: plan.rowCount
+  }));
+
+  const firstTarget = sectionPlans[0]?.rowTargets[0] ?? Math.max(project.roundingPolicy.stitch.step, 1);
+  const lastPlan = sectionPlans[sectionPlans.length - 1];
+  const lastTarget = lastPlan?.rowTargets[lastPlan.rowTargets.length - 1] ?? firstTarget;
+
+  const instructions: Project["instructions"] = [
+    {
+      id: "",
+      rowStart: 1,
+      rowEnd: 1,
+      text: `Cast on ${firstTarget} stitches`
+    }
+  ];
+
+  let rowCursor = 2;
+  sectionPlans.forEach((plan) => {
+    const generated = generateSectionInstructions(plan.sectionId, plan.rowTargets, rowCursor);
+    instructions.push(...generated.instructions);
+    rowCursor = generated.endRow + 1;
+  });
+
+  instructions.push({
+    id: "",
+    rowStart: rowCursor,
+    rowEnd: rowCursor,
+    text: `Bind off ${lastTarget} stitches`
+  });
+
+  const withIds = instructions.map((instruction, index) => ({
+    ...instruction,
+    id: `inst_${String(index + 1).padStart(3, "0")}`
+  }));
+
+  const nextCompletedRowsBySection: Record<string, number> = {};
+  const nextActivePartialBySection: Project["progress"]["activePartialRowBySection"] = {};
+  sectionRows.forEach((section) => {
+    nextCompletedRowsBySection[section.sectionId] = Math.max(project.progress.completedRowsBySection[section.sectionId] ?? 0, 0);
+    nextActivePartialBySection[section.sectionId] = project.progress.activePartialRowBySection[section.sectionId] ?? null;
+  });
+
+  return {
+    ...project,
+    derived: {
+      edgeStitches,
+      sectionRows
+    },
+    instructions: withIds,
+    progress: {
+      completedRowsBySection: nextCompletedRowsBySection,
+      activePartialRowBySection: nextActivePartialBySection
+    }
+  };
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("projects");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -221,9 +515,16 @@ export default function App() {
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromPreferences(defaultPreferences()));
   const [personForm, setPersonForm] = useState<PersonFormState>(emptyPersonForm());
   const [gaugeForm, setGaugeForm] = useState<GaugeFormState>(emptyGaugeForm());
+  const [dragState, setDragState] = useState<DragState | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string>("");
+  const [edgeLengthInput, setEdgeLengthInput] = useState<string>("");
+  const [templateNameDraft, setTemplateNameDraft] = useState<string>("");
+  const [edgeEditorError, setEdgeEditorError] = useState<string>("");
+  const [gaugeFormError, setGaugeFormError] = useState<string>("");
+  const [settingsNotice, setSettingsNotice] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
-  const selectedTemplate = useMemo(
+  const activeTemplate = useMemo(
     () => templates.find((template) => template.id === activeProject?.templateId),
     [activeProject?.templateId, templates]
   );
@@ -238,9 +539,39 @@ export default function App() {
     [gaugeProfiles, selectedGaugeProfileId]
   );
 
+  const pointById = useMemo(() => {
+    const map = new Map<string, Point>();
+    activeProject?.geometryOverrideCm.points.forEach((point) => map.set(point.id, point));
+    return map;
+  }, [activeProject?.geometryOverrideCm.points]);
+
+  const activeGeometry = activeProject?.geometryOverrideCm ?? emptyGeometry;
+
+  const canvasViewBox = useMemo(() => {
+    if (activeGeometry.points.length === 0) {
+      return "0 0 120 120";
+    }
+    const xs = activeGeometry.points.map((point) => point.x);
+    const ys = activeGeometry.points.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const pad = 16;
+    const width = Math.max(maxX - minX, 20) + pad * 2;
+    const height = Math.max(maxY - minY, 20) + pad * 2;
+    return `${minX - pad} ${minY - pad} ${width} ${height}`;
+  }, [activeGeometry.points]);
+
   async function refreshProjects() {
     const loadedProjects = await storageApi.listProjects();
     setProjects(loadedProjects);
+  }
+
+  async function refreshTemplates(): Promise<Template[]> {
+    const loadedTemplates = await storageApi.listTemplates();
+    setTemplates(loadedTemplates);
+    return loadedTemplates;
   }
 
   async function refreshProfiles() {
@@ -276,6 +607,27 @@ export default function App() {
     void initialize();
   }, []);
 
+  useEffect(() => {
+    if (activeProject && !hasGeometry(activeProject.geometryOverrideCm)) {
+      setActiveProject(recalculateProject(hydrateProjectGeometry(activeProject, templates)));
+    }
+  }, [activeProject, templates]);
+
+  useEffect(() => {
+    setSelectedEdgeId("");
+    setEdgeLengthInput("");
+    setDragState(null);
+    setEdgeEditorError("");
+  }, [activeProject?.id]);
+
+  useEffect(() => {
+    if (activeTemplate) {
+      setTemplateNameDraft(activeTemplate.name);
+    } else {
+      setTemplateNameDraft("");
+    }
+  }, [activeProject?.id, activeTemplate?.id, activeTemplate?.name]);
+
   async function handleCreateProject() {
     try {
       const projectName = newProjectName.trim() || `Project ${projects.length + 1}`;
@@ -288,7 +640,7 @@ export default function App() {
       });
       const saved = await storageApi.saveProject(draft);
       await refreshProjects();
-      setActiveProject(saved);
+      setActiveProject(recalculateProject(saved));
       setNewProjectName("");
       setScreen("design");
       setError(null);
@@ -301,7 +653,7 @@ export default function App() {
   async function handleOpenProject(projectId: string) {
     try {
       const loaded = await storageApi.loadProject(projectId);
-      setActiveProject(loaded);
+      setActiveProject(recalculateProject(hydrateProjectGeometry(loaded, templates)));
       setScreen("design");
       setError(null);
     } catch (unknownError) {
@@ -323,10 +675,10 @@ export default function App() {
       return;
     }
     const saved = await storageApi.saveProject({
-      ...activeProject,
+      ...recalculateProject(activeProject),
       updatedAt: nowIso()
     });
-    setActiveProject(saved);
+    setActiveProject(recalculateProject(saved));
     await refreshProjects();
   }
 
@@ -368,6 +720,11 @@ export default function App() {
   }
 
   async function handleSaveGaugeProfile() {
+    if (gaugeForm.stitchesPer10Cm <= 0 || gaugeForm.rowsPer10Cm <= 0) {
+      setGaugeFormError("Stitches/rows per 10cm must both be greater than 0.");
+      return;
+    }
+    setGaugeFormError("");
     const timestamp = nowIso();
     const existing = gaugeProfiles.find((profile) => profile.id === gaugeForm.id);
     const toSave: GaugeProfile = {
@@ -415,13 +772,205 @@ export default function App() {
     });
     setPreferences(saved);
     setSettingsForm(settingsFormFromPreferences(saved));
+    setSettingsNotice("Settings saved.");
     if (activeProject) {
-      setActiveProject({
-        ...activeProject,
-        displayUnit: saved.displayUnit,
-        roundingPolicy: saved.defaultRounding
-      });
+      setActiveProject(
+        recalculateProject({
+          ...activeProject,
+          displayUnit: saved.displayUnit,
+          roundingPolicy: saved.defaultRounding
+        })
+      );
     }
+  }
+
+  function handleTemplateChange(templateId: string) {
+    if (!activeProject) {
+      return;
+    }
+    const template = templates.find((entry) => entry.id === templateId);
+    if (!template) {
+      return;
+    }
+    setActiveProject(
+      recalculateProject({
+        ...activeProject,
+        templateId: template.id,
+        geometryOverrideCm: cloneGeometry(template.geometryCm)
+      })
+    );
+    setSelectedEdgeId("");
+    setEdgeLengthInput("");
+  }
+
+  async function handleSaveAsTemplate() {
+    if (!activeProject) {
+      return;
+    }
+    const timestamp = nowIso();
+    const sourceTemplate = templates.find((entry) => entry.id === activeProject.templateId);
+    const toSave: Template = {
+      id: `tpl_user_${Date.now()}`,
+      schemaVersion: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      name: templateNameDraft.trim() || `${activeProject.name} Template`,
+      garmentType: sourceTemplate?.garmentType ?? "custom",
+      isBuiltin: false,
+      basedOnTemplateId: sourceTemplate?.id ?? null,
+      geometryCm: cloneGeometry(activeProject.geometryOverrideCm)
+    };
+    const saved = await storageApi.saveTemplate(toSave);
+    await refreshTemplates();
+    setActiveProject(recalculateProject({ ...activeProject, templateId: saved.id }));
+  }
+
+  async function handleUpdateTemplate() {
+    if (!activeProject || !activeTemplate || activeTemplate.isBuiltin) {
+      return;
+    }
+    const updated = await storageApi.saveTemplate({
+      ...activeTemplate,
+      name: templateNameDraft.trim() || activeTemplate.name,
+      geometryCm: cloneGeometry(activeProject.geometryOverrideCm)
+    });
+    await refreshTemplates();
+    setActiveProject(recalculateProject({ ...activeProject, templateId: updated.id }));
+  }
+
+  async function handleDeleteTemplate() {
+    if (!activeTemplate || activeTemplate.isBuiltin) {
+      return;
+    }
+    await storageApi.deleteTemplate(activeTemplate.id);
+    const nextTemplates = await refreshTemplates();
+    if (!activeProject) {
+      return;
+    }
+    const fallback = nextTemplates.find((template) => template.isBuiltin) ?? nextTemplates[0];
+    if (fallback) {
+      setActiveProject(
+        recalculateProject({
+          ...activeProject,
+          templateId: fallback.id,
+          geometryOverrideCm: cloneGeometry(fallback.geometryCm)
+        })
+      );
+    }
+  }
+
+  function handleSelectEdge(edgeId: string) {
+    if (!activeProject) {
+      return;
+    }
+    const edge = activeProject.geometryOverrideCm.edges.find((entry) => entry.id === edgeId);
+    if (!edge) {
+      return;
+    }
+    setSelectedEdgeId(edge.id);
+    setEdgeLengthInput(edgeLength(edge, pointById).toFixed(2));
+    setEdgeEditorError("");
+  }
+
+  function handleApplyEdgeLength() {
+    if (!activeProject || !selectedEdgeId) {
+      setEdgeEditorError("Select an edge first.");
+      return;
+    }
+    const maybeLength = parseOptionalNumber(edgeLengthInput);
+    if (maybeLength === null || maybeLength <= 0) {
+      setEdgeEditorError("Length must be a positive number.");
+      return;
+    }
+    const targetLength = maybeLength;
+    setEdgeEditorError("");
+
+    setActiveProject((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const edge = previous.geometryOverrideCm.edges.find((entry) => entry.id === selectedEdgeId);
+      if (!edge) {
+        return previous;
+      }
+
+      const p1 = previous.geometryOverrideCm.points.find((entry) => entry.id === edge.p1);
+      const p2 = previous.geometryOverrideCm.points.find((entry) => entry.id === edge.p2);
+      if (!p1 || !p2) {
+        return previous;
+      }
+
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      const scale = length === 0 ? 0 : targetLength / length;
+
+      const nextP2 = length === 0 ? { x: p1.x + targetLength, y: p1.y } : { x: p1.x + dx * scale, y: p1.y + dy * scale };
+
+      const nextProject = {
+        ...previous,
+        geometryOverrideCm: {
+          ...previous.geometryOverrideCm,
+          points: previous.geometryOverrideCm.points.map((point) =>
+            point.id === p2.id ? { ...point, x: round2(nextP2.x), y: round2(nextP2.y) } : point
+          )
+        }
+      };
+      return recalculateProject(nextProject);
+    });
+    setEdgeLengthInput(targetLength.toFixed(2));
+  }
+
+  function handleRegenerateInstructions() {
+    if (!activeProject) {
+      return;
+    }
+    setActiveProject(recalculateProject(activeProject));
+  }
+
+  function handlePointPointerDown(event: React.PointerEvent<SVGCircleElement>, pointId: string) {
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) {
+      return;
+    }
+    svg.setPointerCapture(event.pointerId);
+    setDragState({ pointId, pointerId: event.pointerId });
+  }
+
+  function handleCanvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragState || !activeProject) {
+      return;
+    }
+    if (event.pointerId !== dragState.pointerId) {
+      return;
+    }
+    const nextPoint = svgPoint(event.currentTarget, event.clientX, event.clientY);
+    setActiveProject((previous) => {
+      if (!previous) {
+        return previous;
+      }
+      const nextProject = {
+        ...previous,
+        geometryOverrideCm: {
+          ...previous.geometryOverrideCm,
+          points: previous.geometryOverrideCm.points.map((point) =>
+            point.id === dragState.pointId ? { ...point, x: round2(nextPoint.x), y: round2(nextPoint.y) } : point
+          )
+        }
+      };
+      return recalculateProject(nextProject);
+    });
+  }
+
+  function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragState || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDragState(null);
   }
 
   function renderProjectsScreen() {
@@ -562,6 +1111,7 @@ export default function App() {
               onClick={() => {
                 setGaugeForm(emptyGaugeForm());
                 setSelectedGaugeProfileId("");
+                setGaugeFormError("");
               }}
             >
               New
@@ -574,6 +1124,7 @@ export default function App() {
                   className={`link-btn ${selectedGaugeProfileId === profile.id ? "selected" : ""}`}
                   onClick={() => {
                     setSelectedGaugeProfileId(profile.id);
+                    setGaugeFormError("");
                     setGaugeForm({
                       id: profile.id,
                       name: profile.name,
@@ -591,14 +1142,23 @@ export default function App() {
           </ul>
           <label>
             Name
-            <input value={gaugeForm.name} onChange={(event) => setGaugeForm({ ...gaugeForm, name: event.target.value })} />
+            <input
+              value={gaugeForm.name}
+              onChange={(event) => {
+                setGaugeFormError("");
+                setGaugeForm({ ...gaugeForm, name: event.target.value });
+              }}
+            />
           </label>
           <label>
             Stitches / 10cm
             <input
               type="number"
               value={gaugeForm.stitchesPer10Cm}
-              onChange={(event) => setGaugeForm({ ...gaugeForm, stitchesPer10Cm: parseNumber(event.target.value, gaugeForm.stitchesPer10Cm) })}
+              onChange={(event) => {
+                setGaugeFormError("");
+                setGaugeForm({ ...gaugeForm, stitchesPer10Cm: parseNumber(event.target.value, gaugeForm.stitchesPer10Cm) });
+              }}
             />
           </label>
           <label>
@@ -606,17 +1166,33 @@ export default function App() {
             <input
               type="number"
               value={gaugeForm.rowsPer10Cm}
-              onChange={(event) => setGaugeForm({ ...gaugeForm, rowsPer10Cm: parseNumber(event.target.value, gaugeForm.rowsPer10Cm) })}
+              onChange={(event) => {
+                setGaugeFormError("");
+                setGaugeForm({ ...gaugeForm, rowsPer10Cm: parseNumber(event.target.value, gaugeForm.rowsPer10Cm) });
+              }}
             />
           </label>
           <label>
             Needle
-            <input value={gaugeForm.needle} onChange={(event) => setGaugeForm({ ...gaugeForm, needle: event.target.value })} />
+            <input
+              value={gaugeForm.needle}
+              onChange={(event) => {
+                setGaugeFormError("");
+                setGaugeForm({ ...gaugeForm, needle: event.target.value });
+              }}
+            />
           </label>
           <label>
             Notes
-            <input value={gaugeForm.notes} onChange={(event) => setGaugeForm({ ...gaugeForm, notes: event.target.value })} />
+            <input
+              value={gaugeForm.notes}
+              onChange={(event) => {
+                setGaugeFormError("");
+                setGaugeForm({ ...gaugeForm, notes: event.target.value });
+              }}
+            />
           </label>
+          {gaugeFormError && <p className="field-error">{gaugeFormError}</p>}
           <div className="inline-actions">
             <button className="primary-btn" onClick={handleSaveGaugeProfile}>
               Save
@@ -631,35 +1207,163 @@ export default function App() {
   }
 
   function renderDesignScreen() {
+    const parsedEdgeLength = parseOptionalNumber(edgeLengthInput);
+    const canApplyEdgeLength = Boolean(selectedEdgeId) && parsedEdgeLength !== null && parsedEdgeLength > 0;
+
     return (
-      <section className="surface">
-        <h2>Design Workspace</h2>
-        {!activeProject && <p>Select a project from Projects to begin editing.</p>}
-        {activeProject && (
-          <>
-            <label>
-              Project Name
-              <input
-                value={activeProject.name}
-                onChange={(event) => setActiveProject({ ...activeProject, name: event.target.value })}
-              />
-            </label>
-            <p>
-              Template: <strong>{selectedTemplate?.name ?? activeProject.templateId}</strong>
-            </p>
-            <p>
-              Snapshot Pair: {activeProject.personProfileSnapshot?.name ?? "None"} / {activeProject.gaugeProfileSnapshot?.name ?? "None"}
-            </p>
-            <p>
-              Derived preview: {activeProject.derived.edgeStitches[0]?.count ?? 0} stitches,{" "}
-              {activeProject.derived.sectionRows[0]?.count ?? 0} rows
-            </p>
-            <button className="primary-btn" onClick={handleSaveProject}>
-              Save Project
-            </button>
-          </>
-        )}
-      </section>
+      <div className="screen-grid">
+        <section className="surface">
+          <h2>Canvas Editor</h2>
+          {!activeProject && <p>Select a project from Projects to begin editing.</p>}
+          {activeProject && (
+            <>
+              <label>
+                Project Name
+                <input
+                  value={activeProject.name}
+                  onChange={(event) => setActiveProject({ ...activeProject, name: event.target.value })}
+                />
+              </label>
+              <label>
+                Active Template
+                <select value={activeProject.templateId} onChange={(event) => handleTemplateChange(event.target.value)}>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name} {template.isBuiltin ? "(Built-in)" : "(User)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="canvas-wrap">
+                <svg
+                  viewBox={canvasViewBox}
+                  className="design-canvas"
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerUp}
+                >
+                  {activeGeometry.sections.map((section) => {
+                    const points = section.pointLoop.map((id) => pointById.get(id)).filter(Boolean) as Point[];
+                    if (points.length < 3) {
+                      return null;
+                    }
+                    return <polygon key={section.id} points={points.map((p) => `${p.x},${p.y}`).join(" ")} className="section-shape" />;
+                  })}
+
+                  {activeGeometry.edges.map((edge) => {
+                    const p1 = pointById.get(edge.p1);
+                    const p2 = pointById.get(edge.p2);
+                    if (!p1 || !p2) {
+                      return null;
+                    }
+                    return (
+                      <g key={edge.id}>
+                        <line
+                          x1={p1.x}
+                          y1={p1.y}
+                          x2={p2.x}
+                          y2={p2.y}
+                          className="edge-hit"
+                          vectorEffect="non-scaling-stroke"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            handleSelectEdge(edge.id);
+                          }}
+                        />
+                        <line
+                          x1={p1.x}
+                          y1={p1.y}
+                          x2={p2.x}
+                          y2={p2.y}
+                          className={`edge-line ${selectedEdgeId === edge.id ? "selected" : ""}`}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text x={(p1.x + p2.x) / 2} y={(p1.y + p2.y) / 2} className="edge-label">
+                          {edge.label}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {activeGeometry.points.map((point) => (
+                    <g key={point.id}>
+                      <circle
+                        cx={point.x}
+                        cy={point.y}
+                        r={6}
+                        className="point-hit"
+                        vectorEffect="non-scaling-stroke"
+                        onPointerDown={(event) => handlePointPointerDown(event, point.id)}
+                      />
+                      <circle
+                        cx={point.x}
+                        cy={point.y}
+                        r={3.6}
+                        className="point-node"
+                      />
+                      <text x={point.x + 3.5} y={point.y - 2.5} className="point-label">
+                        {point.id}
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              </div>
+              <button className="primary-btn" onClick={handleSaveProject}>
+                Save Project
+              </button>
+            </>
+          )}
+        </section>
+
+        <section className="surface">
+          <h2>Template Library</h2>
+          {!activeProject && <p>Open a project to manage templates.</p>}
+          {activeProject && (
+            <>
+              <label>
+                Template Name
+                <input value={templateNameDraft} onChange={(event) => setTemplateNameDraft(event.target.value)} />
+              </label>
+              <div className="inline-actions">
+                <button className="primary-btn" onClick={handleSaveAsTemplate}>
+                  Save As New Template
+                </button>
+                <button className="secondary-btn" onClick={handleUpdateTemplate} disabled={activeTemplate?.isBuiltin}>
+                  Update Template
+                </button>
+                <button className="danger-btn" onClick={handleDeleteTemplate} disabled={activeTemplate?.isBuiltin}>
+                  Delete Template
+                </button>
+              </div>
+
+              <h3>Edge Length Editor</h3>
+              {!selectedEdgeId && <p>Select an edge in the canvas.</p>}
+              {selectedEdgeId && (
+                <>
+                  <p>
+                    Selected edge: <strong>{selectedEdgeId}</strong>
+                  </p>
+                  <label>
+                    Length (cm)
+                    <input
+                      type="number"
+                      value={edgeLengthInput}
+                      onChange={(event) => {
+                        setEdgeEditorError("");
+                        setEdgeLengthInput(event.target.value);
+                      }}
+                    />
+                  </label>
+                  {edgeEditorError && <p className="field-error">{edgeEditorError}</p>}
+                  <button className="secondary-btn" onClick={handleApplyEdgeLength} disabled={!canApplyEdgeLength}>
+                    Apply Length
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </section>
+      </div>
     );
   }
 
@@ -670,6 +1374,14 @@ export default function App() {
         {!activeProject && <p>Open a project to view instructions.</p>}
         {activeProject && (
           <>
+            <div className="inline-actions">
+              <button className="secondary-btn" onClick={handleRegenerateInstructions}>
+                Regenerate Instructions
+              </button>
+              <button className="primary-btn" onClick={handleSaveProject}>
+                Save Progress
+              </button>
+            </div>
             <ol>
               {activeProject.instructions.map((instruction) => (
                 <li key={instruction.id}>
@@ -748,9 +1460,6 @@ export default function App() {
                 </div>
               );
             })}
-            <button className="primary-btn" onClick={handleSaveProject}>
-              Save Progress
-            </button>
           </>
         )}
       </section>
@@ -765,7 +1474,10 @@ export default function App() {
           Display Unit
           <select
             value={settingsForm.displayUnit}
-            onChange={(event) => setSettingsForm({ ...settingsForm, displayUnit: event.target.value as "in" | "cm" })}
+            onChange={(event) => {
+              setSettingsNotice("");
+              setSettingsForm({ ...settingsForm, displayUnit: event.target.value as "in" | "cm" });
+            }}
           >
             <option value="in">Inches</option>
             <option value="cm">Centimeters</option>
@@ -775,7 +1487,10 @@ export default function App() {
           Stitch Rounding Mode
           <select
             value={settingsForm.stitchMode}
-            onChange={(event) => setSettingsForm({ ...settingsForm, stitchMode: event.target.value as RoundingMode })}
+            onChange={(event) => {
+              setSettingsNotice("");
+              setSettingsForm({ ...settingsForm, stitchMode: event.target.value as RoundingMode });
+            }}
           >
             <option value="nearest">Nearest</option>
             <option value="ceil">Ceil</option>
@@ -788,14 +1503,20 @@ export default function App() {
             type="number"
             min={1}
             value={settingsForm.stitchStep}
-            onChange={(event) => setSettingsForm({ ...settingsForm, stitchStep: Math.max(parseNumber(event.target.value, 1), 1) })}
+            onChange={(event) => {
+              setSettingsNotice("");
+              setSettingsForm({ ...settingsForm, stitchStep: Math.max(parseNumber(event.target.value, 1), 1) });
+            }}
           />
         </label>
         <label>
           Row Rounding Mode
           <select
             value={settingsForm.rowMode}
-            onChange={(event) => setSettingsForm({ ...settingsForm, rowMode: event.target.value as RoundingMode })}
+            onChange={(event) => {
+              setSettingsNotice("");
+              setSettingsForm({ ...settingsForm, rowMode: event.target.value as RoundingMode });
+            }}
           >
             <option value="nearest">Nearest</option>
             <option value="ceil">Ceil</option>
@@ -808,9 +1529,13 @@ export default function App() {
             type="number"
             min={1}
             value={settingsForm.rowStep}
-            onChange={(event) => setSettingsForm({ ...settingsForm, rowStep: Math.max(parseNumber(event.target.value, 1), 1) })}
+            onChange={(event) => {
+              setSettingsNotice("");
+              setSettingsForm({ ...settingsForm, rowStep: Math.max(parseNumber(event.target.value, 1), 1) });
+            }}
           />
         </label>
+        {settingsNotice && <p className="field-note">{settingsNotice}</p>}
         <button className="primary-btn" onClick={handleSaveSettings}>
           Save Settings
         </button>

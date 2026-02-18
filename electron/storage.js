@@ -231,6 +231,64 @@ async function listTemplates() {
   return templates;
 }
 
+async function saveTemplate(template) {
+  if (!template || typeof template !== "object") {
+    throw new Error("Template payload is required.");
+  }
+  if (template.isBuiltin) {
+    throw new Error("Built-in templates are immutable. Use Save as New Template.");
+  }
+
+  const timestamp = new Date().toISOString();
+  const existing = (await listTemplates()).find((entry) => entry.id === template.id);
+  if (existing?.isBuiltin) {
+    throw new Error("Cannot overwrite built-in template.");
+  }
+
+  const id = typeof template.id === "string" && template.id.startsWith("tpl_") ? template.id : `tpl_user_${Date.now()}`;
+  const normalized = {
+    ...template,
+    id,
+    schemaVersion: SCHEMA_VERSION,
+    isBuiltin: false,
+    createdAt: existing?.createdAt ?? template.createdAt ?? timestamp,
+    updatedAt: timestamp
+  };
+
+  const { templatesUser } = rootPaths();
+  await writeJson(path.join(templatesUser, `${id}.json`), normalized);
+  return normalized;
+}
+
+async function deleteTemplate(templateId) {
+  const templates = await listTemplates();
+  const target = templates.find((template) => template.id === templateId);
+
+  if (!target) {
+    return;
+  }
+  if (target.isBuiltin) {
+    throw new Error("Cannot delete built-in template.");
+  }
+
+  const projects = await listProjects();
+  const referenced = await Promise.all(
+    projects.map(async (projectSummary) => {
+      const project = await loadProject(projectSummary.id);
+      return project.templateId === templateId;
+    })
+  );
+  if (referenced.some(Boolean)) {
+    throw new Error("Template is referenced by one or more projects.");
+  }
+
+  const { templatesUser } = rootPaths();
+  const userPath = path.join(templatesUser, `${templateId}.json`);
+  if (fsSync.existsSync(userPath)) {
+    await fs.unlink(userPath);
+  }
+}
+
 async function listProjects() {
   const { projects } = rootPaths();
   const projectFiles = listJsonFiles(projects);
@@ -339,6 +397,8 @@ async function deleteProject(projectId) {
 module.exports = {
   bootstrap,
   listTemplates,
+  saveTemplate,
+  deleteTemplate,
   listProjects,
   loadProject,
   saveProject,
