@@ -1,0 +1,13 @@
+The end goal of this tool is to be able to create and design a variety of garment patterns for knitting.
+
+
+Ideally, we have a starting wireframe of sorts that is rendered flat (2D) per garment type. The wireframe should be manipulatable by clicking and dragging on designated (or maybe any?) point to create the desired dimensions. Right click on an edge to set the length. Reference https://github.com/khalildh/garment-notation for different garment types and starter wireframes. 
+
+Additionally, I would like to be able to create a "profile" for a person that has a set of standard measurements to apply to the wireframes out the gate. There should also be a "knitters" profile where I can designate my gauge for the current project with the set needles and fabric. 
+
+I'd like to be able to designate the color of a particular section, as well as upload an image and use it as a "stamp" of sorts, or a repeating image across the length of fabric. The program should see the image and algorithmically create a csv/excel style grid with one color per cell to recreate the design. Potentially designate specific colors available beforehand, or designate a max number of colors before parsing into the grid.  
+
+When the garment is designed (or possibly while designing/as it updates), have an additional viewport with row by row knitting instructions and the grid view. Maybe on separate tabs that you can switch through or resize and move. UI inspiration from blender, godot, and aseprite. 
+
+Once a project has been saved, create some way to track which rows have been done, and have it visually reflect in both the knitting instructions (strikethrough?) as well as the grid (maybe dim/slightly alter the colors)
+

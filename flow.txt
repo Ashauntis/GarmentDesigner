@@ -1,0 +1,23 @@
+standardize ... gauges
+
+when adding to the palette offer to add multiple gauges per color
+
+
+
+yarn color pallete selector
+client measurements
+artwork library
+garment designer
+garment generator
+garment progress
+
+
+
+
+sqlite backend per "company file"
+
+id, pallete_id, color, gauge, avail
+id, name, height, waist, etc
+id, image_name, image_data
+id, garment_name, 
+id, garment_type_id, garment_measurement_id, measurement
