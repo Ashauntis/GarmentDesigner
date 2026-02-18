@@ -202,11 +202,19 @@ async function seedDefaultPreferences() {
     createdAt: timestamp,
     updatedAt: timestamp,
     displayUnit: "in",
+    instructionVerbosity: "grouped",
     defaultRounding: {
       stitch: { mode: "nearest", step: 2 },
       row: { mode: "nearest", step: 1 }
     }
   });
+}
+
+function normalizePreferencesShape(preferences) {
+  return {
+    ...preferences,
+    instructionVerbosity: preferences.instructionVerbosity === "verbose" ? "verbose" : "grouped"
+  };
 }
 
 async function bootstrap({ userDataRoot, appPath }) {
@@ -369,17 +377,17 @@ async function getPreferences() {
   const { preferences } = rootPaths();
   const prefs = await readJson(preferences);
   validateSchema(prefs, preferences);
-  return prefs;
+  return normalizePreferencesShape(prefs);
 }
 
 async function savePreferences(preferences) {
   const existing = await getPreferences();
-  const normalized = {
+  const normalized = normalizePreferencesShape({
     ...existing,
     ...preferences,
     schemaVersion: SCHEMA_VERSION,
     updatedAt: new Date().toISOString()
-  };
+  });
 
   const { preferences: preferencesPath } = rootPaths();
   await writeJson(preferencesPath, normalized);

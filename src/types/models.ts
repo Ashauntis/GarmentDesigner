@@ -1,5 +1,6 @@
 export type DisplayUnit = "in" | "cm";
 export type RoundingMode = "nearest" | "ceil" | "floor";
+export type InstructionVerbosity = "grouped" | "verbose";
 
 export interface Metadata {
   id: string;
@@ -21,6 +22,7 @@ export interface RoundingPolicy {
 export interface AppPreferences extends Metadata {
   displayUnit: DisplayUnit;
   defaultRounding: RoundingPolicy;
+  instructionVerbosity: InstructionVerbosity;
 }
 
 export interface Point {

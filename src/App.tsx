@@ -8,6 +8,7 @@ import type {
   GaugeProfile,
   GaugeProfileSnapshot,
   Geometry,
+  InstructionVerbosity,
   PersonProfile,
   PersonProfileSnapshot,
   Point,
@@ -100,6 +101,7 @@ function defaultPreferences(): AppPreferences {
     createdAt: timestamp,
     updatedAt: timestamp,
     displayUnit: "in",
+    instructionVerbosity: "grouped",
     defaultRounding: {
       stitch: { mode: "nearest", step: 2 },
       row: { mode: "nearest", step: 1 }
@@ -224,7 +226,7 @@ function buildProjectDraft(input: {
     }
   };
 
-  return recalculateProject(draft);
+  return recalculateProject(draft, input.preferences.instructionVerbosity);
 }
 
 function emptyPersonForm(): PersonFormState {
@@ -352,20 +354,53 @@ function rowTargetsForSection(args: {
   };
 }
 
-function generateSectionInstructions(
-  sectionId: string,
-  rowTargets: number[],
-  startRow: number
-): { instructions: Project["instructions"]; endRow: number } {
+function generateSectionInstructions(args: {
+  sectionId: string;
+  rowTargets: number[];
+  startRow: number;
+  startingStitches: number;
+  verbosity: InstructionVerbosity;
+}): { instructions: Project["instructions"]; endRow: number; endingStitches: number } {
+  const { sectionId, rowTargets, startRow, startingStitches, verbosity } = args;
   if (rowTargets.length === 0) {
-    return { instructions: [], endRow: startRow - 1 };
+    return { instructions: [], endRow: startRow - 1, endingStitches: startingStitches };
   }
 
   const instructions: Project["instructions"] = [];
-  let currentStitches = rowTargets[0];
+  let currentStitches = startingStitches;
   let spanStart = startRow;
 
-  for (let i = 1; i < rowTargets.length; i += 1) {
+  if (verbosity === "verbose") {
+    for (let i = 0; i < rowTargets.length; i += 1) {
+      const rowNumber = startRow + i;
+      const next = rowTargets[i];
+      if (next === currentStitches) {
+        instructions.push({
+          id: "",
+          rowStart: rowNumber,
+          rowEnd: rowNumber,
+          text: `Work row ${rowNumber} even at ${next} stitches (${sectionId})`
+        });
+      } else {
+        const delta = next - currentStitches;
+        instructions.push({
+          id: "",
+          rowStart: rowNumber,
+          rowEnd: rowNumber,
+          text: `${delta > 0 ? "Increase" : "Decrease"} ${Math.abs(delta)} stitch${Math.abs(delta) === 1 ? "" : "es"} to ${next} stitches (${sectionId})`
+        });
+      }
+      currentStitches = next;
+    }
+
+    return {
+      instructions,
+      endRow: startRow + rowTargets.length - 1,
+      endingStitches: currentStitches
+    };
+  }
+
+  for (let i = 0; i < rowTargets.length; i += 1) {
     const rowNumber = startRow + i;
     const next = rowTargets[i];
     if (next === currentStitches) {
@@ -405,10 +440,10 @@ function generateSectionInstructions(
     });
   }
 
-  return { instructions, endRow };
+  return { instructions, endRow, endingStitches: currentStitches };
 }
 
-function recalculateProject(project: Project): Project {
+function recalculateProject(project: Project, verbosity: InstructionVerbosity): Project {
   const pointMap = new Map(project.geometryOverrideCm.points.map((point) => [point.id, point]));
   const stitchesPer10Cm = project.gaugeProfileSnapshot?.stitchesPer10Cm && project.gaugeProfileSnapshot.stitchesPer10Cm > 0
     ? project.gaugeProfileSnapshot.stitchesPer10Cm
@@ -462,17 +497,25 @@ function recalculateProject(project: Project): Project {
   ];
 
   let rowCursor = 2;
+  let currentStitches = firstTarget;
   sectionPlans.forEach((plan) => {
-    const generated = generateSectionInstructions(plan.sectionId, plan.rowTargets, rowCursor);
+    const generated = generateSectionInstructions({
+      sectionId: plan.sectionId,
+      rowTargets: plan.rowTargets,
+      startRow: rowCursor,
+      startingStitches: currentStitches,
+      verbosity
+    });
     instructions.push(...generated.instructions);
     rowCursor = generated.endRow + 1;
+    currentStitches = generated.endingStitches;
   });
 
   instructions.push({
     id: "",
     rowStart: rowCursor,
     rowEnd: rowCursor,
-    text: `Bind off ${lastTarget} stitches`
+    text: `Bind off ${currentStitches || lastTarget} stitches`
   });
 
   const withIds = instructions.map((instruction, index) => ({
@@ -522,6 +565,7 @@ export default function App() {
   const [edgeEditorError, setEdgeEditorError] = useState<string>("");
   const [gaugeFormError, setGaugeFormError] = useState<string>("");
   const [settingsNotice, setSettingsNotice] = useState<string>("");
+  const [instructionsNotice, setInstructionsNotice] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   const activeTemplate = useMemo(
@@ -609,7 +653,7 @@ export default function App() {
 
   useEffect(() => {
     if (activeProject && !hasGeometry(activeProject.geometryOverrideCm)) {
-      setActiveProject(recalculateProject(hydrateProjectGeometry(activeProject, templates)));
+      setActiveProject(recalculateProject(hydrateProjectGeometry(activeProject, templates), preferences.instructionVerbosity));
     }
   }, [activeProject, templates]);
 
@@ -640,7 +684,7 @@ export default function App() {
       });
       const saved = await storageApi.saveProject(draft);
       await refreshProjects();
-      setActiveProject(recalculateProject(saved));
+      setActiveProject(recalculateProject(saved, preferences.instructionVerbosity));
       setNewProjectName("");
       setScreen("design");
       setError(null);
@@ -653,7 +697,7 @@ export default function App() {
   async function handleOpenProject(projectId: string) {
     try {
       const loaded = await storageApi.loadProject(projectId);
-      setActiveProject(recalculateProject(hydrateProjectGeometry(loaded, templates)));
+      setActiveProject(recalculateProject(hydrateProjectGeometry(loaded, templates), preferences.instructionVerbosity));
       setScreen("design");
       setError(null);
     } catch (unknownError) {
@@ -675,10 +719,10 @@ export default function App() {
       return;
     }
     const saved = await storageApi.saveProject({
-      ...recalculateProject(activeProject),
+      ...recalculateProject(activeProject, preferences.instructionVerbosity),
       updatedAt: nowIso()
     });
-    setActiveProject(recalculateProject(saved));
+    setActiveProject(recalculateProject(saved, preferences.instructionVerbosity));
     await refreshProjects();
   }
 
@@ -779,7 +823,7 @@ export default function App() {
           ...activeProject,
           displayUnit: saved.displayUnit,
           roundingPolicy: saved.defaultRounding
-        })
+        }, saved.instructionVerbosity)
       );
     }
   }
@@ -797,7 +841,7 @@ export default function App() {
         ...activeProject,
         templateId: template.id,
         geometryOverrideCm: cloneGeometry(template.geometryCm)
-      })
+      }, preferences.instructionVerbosity)
     );
     setSelectedEdgeId("");
     setEdgeLengthInput("");
@@ -822,7 +866,7 @@ export default function App() {
     };
     const saved = await storageApi.saveTemplate(toSave);
     await refreshTemplates();
-    setActiveProject(recalculateProject({ ...activeProject, templateId: saved.id }));
+    setActiveProject(recalculateProject({ ...activeProject, templateId: saved.id }, preferences.instructionVerbosity));
   }
 
   async function handleUpdateTemplate() {
@@ -835,7 +879,7 @@ export default function App() {
       geometryCm: cloneGeometry(activeProject.geometryOverrideCm)
     });
     await refreshTemplates();
-    setActiveProject(recalculateProject({ ...activeProject, templateId: updated.id }));
+    setActiveProject(recalculateProject({ ...activeProject, templateId: updated.id }, preferences.instructionVerbosity));
   }
 
   async function handleDeleteTemplate() {
@@ -854,7 +898,7 @@ export default function App() {
           ...activeProject,
           templateId: fallback.id,
           geometryOverrideCm: cloneGeometry(fallback.geometryCm)
-        })
+        }, preferences.instructionVerbosity)
       );
     }
   }
@@ -917,7 +961,7 @@ export default function App() {
           )
         }
       };
-      return recalculateProject(nextProject);
+      return recalculateProject(nextProject, preferences.instructionVerbosity);
     });
     setEdgeLengthInput(targetLength.toFixed(2));
   }
@@ -926,7 +970,33 @@ export default function App() {
     if (!activeProject) {
       return;
     }
-    setActiveProject(recalculateProject(activeProject));
+    setActiveProject(recalculateProject(activeProject, preferences.instructionVerbosity));
+    setInstructionsNotice(
+      preferences.instructionVerbosity === "verbose"
+        ? "Verbose instructions regenerated."
+        : "Grouped instructions regenerated."
+    );
+  }
+
+  async function handleInstructionVerbosityChange(nextVerbosity: InstructionVerbosity) {
+    if (nextVerbosity === preferences.instructionVerbosity) {
+      return;
+    }
+    try {
+      const saved = await storageApi.savePreferences({
+        ...preferences,
+        instructionVerbosity: nextVerbosity
+      });
+      setPreferences(saved);
+      setSettingsForm(settingsFormFromPreferences(saved));
+      setInstructionsNotice(nextVerbosity === "verbose" ? "Verbose mode enabled." : "Grouped mode enabled.");
+      if (activeProject) {
+        setActiveProject(recalculateProject(activeProject, nextVerbosity));
+      }
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : "Failed to change instruction mode.";
+      setError(message);
+    }
   }
 
   function handlePointPointerDown(event: React.PointerEvent<SVGCircleElement>, pointId: string) {
@@ -959,7 +1029,7 @@ export default function App() {
           )
         }
       };
-      return recalculateProject(nextProject);
+      return recalculateProject(nextProject, preferences.instructionVerbosity);
     });
   }
 
@@ -1375,6 +1445,16 @@ export default function App() {
         {activeProject && (
           <>
             <div className="inline-actions">
+              <label className="inline-control">
+                Instruction Detail
+                <select
+                  value={preferences.instructionVerbosity}
+                  onChange={(event) => void handleInstructionVerbosityChange(event.target.value as InstructionVerbosity)}
+                >
+                  <option value="grouped">Grouped</option>
+                  <option value="verbose">Verbose</option>
+                </select>
+              </label>
               <button className="secondary-btn" onClick={handleRegenerateInstructions}>
                 Regenerate Instructions
               </button>
@@ -1382,6 +1462,7 @@ export default function App() {
                 Save Progress
               </button>
             </div>
+            {instructionsNotice && <p className="field-note">{instructionsNotice}</p>}
             <ol>
               {activeProject.instructions.map((instruction) => (
                 <li key={instruction.id}>
