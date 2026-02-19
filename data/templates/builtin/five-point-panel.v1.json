@@ -1,0 +1,28 @@
+{
+  "id": "tpl_five_point_panel_builtin_v1",
+  "schemaVersion": 1,
+  "createdAt": "2026-02-18T00:00:00.000Z",
+  "updatedAt": "2026-02-18T00:00:00.000Z",
+  "name": "Five-Point Panel",
+  "garmentType": "sample_panel",
+  "isBuiltin": true,
+  "basedOnTemplateId": null,
+  "geometryCm": {
+    "points": [
+      { "id": "p1", "x": 0, "y": 18 },
+      { "id": "p2", "x": 18, "y": 0 },
+      { "id": "p3", "x": 38, "y": 18 },
+      { "id": "p4", "x": 30, "y": 56 },
+      { "id": "p5", "x": 8, "y": 56 }
+    ],
+    "edges": [
+      { "id": "e1", "p1": "p1", "p2": "p2", "label": "upper_left" },
+      { "id": "e2", "p1": "p2", "p2": "p3", "label": "upper_right" },
+      { "id": "e3", "p1": "p3", "p2": "p4", "label": "right_side" },
+      { "id": "e4", "p1": "p4", "p2": "p5", "label": "base" },
+      { "id": "e5", "p1": "p5", "p2": "p1", "label": "left_side" }
+    ],
+    "sections": [{ "id": "s1", "name": "panel", "pointLoop": ["p1", "p2", "p3", "p4", "p5"] }],
+    "constraints": []
+  }
+}

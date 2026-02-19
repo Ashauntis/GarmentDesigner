@@ -182,9 +182,7 @@ async function seedBuiltinTemplates(appPathname) {
     builtinFiles.map(async (sourcePath) => {
       const fileName = path.basename(sourcePath);
       const targetPath = path.join(templatesBuiltin, fileName);
-      if (!fsSync.existsSync(targetPath)) {
-        await fs.copyFile(sourcePath, targetPath);
-      }
+      await fs.copyFile(sourcePath, targetPath);
     })
   );
 }

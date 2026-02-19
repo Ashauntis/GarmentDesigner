@@ -88,6 +88,10 @@ function hasGeometry(geometry?: Geometry): boolean {
   return Boolean(geometry && geometry.points.length > 0 && geometry.edges.length > 0);
 }
 
+function selectDefaultTemplate(templates: Template[]): Template | undefined {
+  return templates.find((template) => template.id === "tpl_scarf_builtin_v1") ?? templates.find((template) => template.isBuiltin) ?? templates[0];
+}
+
 function defaultPreferences(): AppPreferences {
   const timestamp = nowIso();
   return {
@@ -651,7 +655,7 @@ export default function App() {
     try {
       const projectName = newProjectName.trim() || `Project ${projects.length + 1}`;
       const draft = buildProjectDraft({
-        template: templates[0],
+        template: selectDefaultTemplate(templates),
         projectName,
         preferences,
         personProfile: selectedPersonProfile,
