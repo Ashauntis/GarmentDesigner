@@ -81,6 +81,24 @@ export interface InstructionGrid {
   rows: InstructionGridRow[];
 }
 
+export interface GridEditHistoryEntry {
+  id: string;
+  timestamp: string;
+  action: "generate_from_shape" | "toggle_stitch" | "toggle_progress" | "clear_progress";
+  rowIndex: number | null;
+  columnIndex: number | null;
+  afterEnabled?: boolean;
+  afterCompleted?: boolean;
+  note: string;
+}
+
+export interface ProjectGridWorkspace {
+  currentGrid: InstructionGrid;
+  sourceShapeGrid: InstructionGrid;
+  completedCellKeys: string[];
+  editHistory: GridEditHistoryEntry[];
+ }
+
 export interface PersonProfileSnapshot {
   sourceProfileId: string | null;
   sourceProfileUpdatedAt: string | null;
@@ -118,6 +136,7 @@ export interface Project extends Metadata {
     instructionGrid?: InstructionGrid;
   };
   instructions: ProjectInstruction[];
+  gridWorkspace?: ProjectGridWorkspace;
   progress: {
     completedRowsBySection: Record<string, number>;
     activePartialRowBySection: Record<string, PartialRowProgress | null>;

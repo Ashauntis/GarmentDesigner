@@ -4,6 +4,7 @@ import { applyRounding } from "./domain/rounding";
 import { storageApi } from "./storage/ipc";
 import type {
   AppPreferences,
+  GridEditHistoryEntry,
   GaugeProfile,
   GaugeProfileSnapshot,
   Geometry,
@@ -13,6 +14,7 @@ import type {
   PersonProfileSnapshot,
   Point,
   Project,
+  ProjectGridWorkspace,
   ProjectSummary,
   RoundingMode,
   Template
@@ -597,6 +599,201 @@ function rowPlanGridWidth(rowPlan: RowPlan): number {
 
 const GRID_CELL_COVERAGE_THRESHOLD = 0.5;
 const GRID_ROW_SAMPLE_OFFSETS = [0.2, 0.5, 0.8];
+const GRID_HISTORY_LIMIT = 200;
+
+function cloneInstructionGrid(grid: InstructionGrid): InstructionGrid {
+  return {
+    columnCount: grid.columnCount,
+    rowCount: grid.rowCount,
+    numberedCellCount: grid.numberedCellCount,
+    rows: grid.rows.map((row) => ({
+      ...row,
+      cells: [...row.cells]
+    }))
+  };
+}
+
+function renumberInstructionGrid(grid: InstructionGrid): InstructionGrid {
+  let nextCellNumber = 1;
+  const rows = grid.rows.map((row) => {
+    let occupiedStitches = 0;
+    const cells = row.cells.map((cell) => {
+      if (cell === null) {
+        return null;
+      }
+      occupiedStitches += 1;
+      const assigned = nextCellNumber;
+      nextCellNumber += 1;
+      return assigned;
+    });
+    return {
+      ...row,
+      occupiedStitches,
+      cells
+    };
+  });
+
+  return {
+    ...grid,
+    rowCount: rows.length,
+    numberedCellCount: nextCellNumber - 1,
+    rows
+  };
+}
+
+function gridCellProgressKey(rowIndex: number, columnIndex: number): string {
+  return `${rowIndex}:${columnIndex}`;
+}
+
+function trimCompletedCellKeysForGrid(completedCellKeys: string[], grid: InstructionGrid): string[] {
+  const validKeys = new Set<string>();
+  for (let rowIndex = 0; rowIndex < grid.rows.length; rowIndex += 1) {
+    const row = grid.rows[rowIndex];
+    for (let colIndex = 0; colIndex < row.cells.length; colIndex += 1) {
+      if (row.cells[colIndex] !== null) {
+        validKeys.add(gridCellProgressKey(rowIndex, colIndex));
+      }
+    }
+  }
+  return completedCellKeys.filter((key) => validKeys.has(key));
+}
+
+function appendGridHistory(
+  entries: GridEditHistoryEntry[],
+  entry: Omit<GridEditHistoryEntry, "id" | "timestamp">
+): GridEditHistoryEntry[] {
+  const next = [
+    ...entries,
+    {
+      ...entry,
+      id: `grid_hist_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      timestamp: nowIso()
+    }
+  ];
+  return next.slice(-GRID_HISTORY_LIMIT);
+}
+
+function normalizeGridWorkspace(
+  project: Project,
+  sourceShapeGrid: InstructionGrid
+): ProjectGridWorkspace {
+  const existing = project.gridWorkspace;
+  if (!existing) {
+    return {
+      currentGrid: cloneInstructionGrid(sourceShapeGrid),
+      sourceShapeGrid: cloneInstructionGrid(sourceShapeGrid),
+      completedCellKeys: [],
+      editHistory: []
+    };
+  }
+
+  const currentGrid = renumberInstructionGrid(cloneInstructionGrid(existing.currentGrid));
+  const normalizedCompletedCellKeys = trimCompletedCellKeysForGrid(
+    Array.isArray(existing.completedCellKeys) ? existing.completedCellKeys : [],
+    currentGrid
+  );
+
+  return {
+    currentGrid,
+    sourceShapeGrid: cloneInstructionGrid(sourceShapeGrid),
+    completedCellKeys: normalizedCompletedCellKeys,
+    editHistory: Array.isArray(existing.editHistory) ? existing.editHistory.slice(-GRID_HISTORY_LIMIT) : []
+  };
+}
+
+function replaceGridWorkspaceFromShape(project: Project): Project {
+  const sourceGrid = project.derived.instructionGrid;
+  if (!sourceGrid) {
+    return project;
+  }
+  const nextWorkspace: ProjectGridWorkspace = {
+    currentGrid: cloneInstructionGrid(sourceGrid),
+    sourceShapeGrid: cloneInstructionGrid(sourceGrid),
+    completedCellKeys: [],
+    editHistory: appendGridHistory(project.gridWorkspace?.editHistory ?? [], {
+      action: "generate_from_shape",
+      rowIndex: null,
+      columnIndex: null,
+      note: "Generated new editable grid from current shape"
+    })
+  };
+
+  return {
+    ...project,
+    gridWorkspace: nextWorkspace
+  };
+}
+
+function toggleGridCellStitch(project: Project, rowIndex: number, columnIndex: number): Project {
+  const grid = project.gridWorkspace?.currentGrid;
+  if (!grid) {
+    return project;
+  }
+  const row = grid.rows[rowIndex];
+  if (!row || columnIndex < 0 || columnIndex >= row.cells.length) {
+    return project;
+  }
+
+  const nextGrid = cloneInstructionGrid(grid);
+  const currentCell = nextGrid.rows[rowIndex].cells[columnIndex];
+  const nextEnabled = currentCell === null;
+  nextGrid.rows[rowIndex].cells[columnIndex] = nextEnabled ? 1 : null;
+  const renumbered = renumberInstructionGrid(nextGrid);
+  const toggledKey = gridCellProgressKey(rowIndex, columnIndex);
+  const nextCompletedCellKeys = trimCompletedCellKeysForGrid(
+    (project.gridWorkspace?.completedCellKeys ?? []).filter((key) => !(key === toggledKey && !nextEnabled)),
+    renumbered
+  );
+
+  return {
+    ...project,
+    gridWorkspace: {
+      ...(project.gridWorkspace as ProjectGridWorkspace),
+      currentGrid: renumbered,
+      completedCellKeys: nextCompletedCellKeys,
+      editHistory: appendGridHistory(project.gridWorkspace?.editHistory ?? [], {
+        action: "toggle_stitch",
+        rowIndex,
+        columnIndex,
+        afterEnabled: nextEnabled,
+        note: `${nextEnabled ? "Enabled" : "Disabled"} stitch at row ${row.projectRowNumber}, col ${columnIndex + 1}`
+      })
+    }
+  };
+}
+
+function toggleGridCellProgress(project: Project, rowIndex: number, columnIndex: number): Project {
+  const workspace = project.gridWorkspace;
+  const grid = workspace?.currentGrid;
+  const row = grid?.rows[rowIndex];
+  if (!workspace || !grid || !row || row.cells[columnIndex] === null) {
+    return project;
+  }
+
+  const key = gridCellProgressKey(rowIndex, columnIndex);
+  const completed = new Set(workspace.completedCellKeys);
+  const nextCompleted = !completed.has(key);
+  if (nextCompleted) {
+    completed.add(key);
+  } else {
+    completed.delete(key);
+  }
+
+  return {
+    ...project,
+    gridWorkspace: {
+      ...workspace,
+      completedCellKeys: [...completed],
+      editHistory: appendGridHistory(workspace.editHistory ?? [], {
+        action: "toggle_progress",
+        rowIndex,
+        columnIndex,
+        afterCompleted: nextCompleted,
+        note: `${nextCompleted ? "Marked" : "Unmarked"} progress at row ${row.projectRowNumber}, col ${columnIndex + 1}`
+      })
+    }
+  };
+}
 
 function buildInstructionGrid(args: {
   sectionPlans: Array<{ sectionId: string; points: Point[]; rowPlans: RowPlan[] }>;
@@ -735,6 +932,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     sectionPlans,
     stitchesPer10Cm
   });
+  const gridWorkspace = normalizeGridWorkspace(project, instructionGrid);
 
   const firstTarget = sectionPlans[0]?.rowPlans[0]?.targetStitches ?? Math.max(project.roundingPolicy.stitch.step, 1);
   const lastPlan = sectionPlans[sectionPlans.length - 1];
@@ -791,6 +989,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
       instructionGrid
     },
     instructions: withIds,
+    gridWorkspace,
     progress: {
       completedRowsBySection: nextCompletedRowsBySection,
       activePartialRowBySection: nextActivePartialBySection
@@ -820,6 +1019,7 @@ export default function App() {
   const [gaugeFormError, setGaugeFormError] = useState<string>("");
   const [settingsNotice, setSettingsNotice] = useState<string>("");
   const [instructionsNotice, setInstructionsNotice] = useState<string>("");
+  const [gridClickMode, setGridClickMode] = useState<"edit" | "progress">("edit");
   const [error, setError] = useState<string | null>(null);
 
   const activeTemplate = useMemo(
@@ -1220,17 +1420,23 @@ export default function App() {
     if (!activeProject) {
       return;
     }
-    setActiveProject(recalculateProject(activeProject, preferences.instructionVerbosity));
-    setInstructionsNotice("Instruction grid regenerated.");
+    const recalculated = recalculateProject(activeProject, preferences.instructionVerbosity);
+    setActiveProject(replaceGridWorkspaceFromShape(recalculated));
+    setInstructionsNotice("Generated a new editable grid from the current shape.");
   }
 
   function handleExportInstructionGridCsv() {
-    if (!activeProject?.derived.instructionGrid) {
+    if (!activeProject) {
+      setInstructionsNotice("Open a project before exporting a grid.");
+      return;
+    }
+    const exportGrid = activeProject?.gridWorkspace?.currentGrid ?? activeProject?.derived.instructionGrid;
+    if (!exportGrid) {
       setInstructionsNotice("No instruction grid available to export.");
       return;
     }
 
-    const csv = instructionGridToCsv(activeProject.derived.instructionGrid);
+    const csv = instructionGridToCsv(exportGrid);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -1246,7 +1452,40 @@ export default function App() {
     anchor.remove();
     URL.revokeObjectURL(url);
 
-    setInstructionsNotice(`Exported CSV grid (${activeProject.derived.instructionGrid.rowCount} rows).`);
+    setInstructionsNotice(`Exported CSV grid (${exportGrid.rowCount} rows).`);
+  }
+
+  function handleGridCellClick(rowIndex: number, columnIndex: number) {
+    setActiveProject((previous) => {
+      if (!previous) {
+        return previous;
+      }
+      const next =
+        gridClickMode === "edit"
+          ? toggleGridCellStitch(previous, rowIndex, columnIndex)
+          : toggleGridCellProgress(previous, rowIndex, columnIndex);
+      return next;
+    });
+  }
+
+  function handleClearGridProgress() {
+    if (!activeProject?.gridWorkspace) {
+      return;
+    }
+    setActiveProject({
+      ...activeProject,
+      gridWorkspace: {
+        ...activeProject.gridWorkspace,
+        completedCellKeys: [],
+        editHistory: appendGridHistory(activeProject.gridWorkspace.editHistory ?? [], {
+          action: "clear_progress",
+          rowIndex: null,
+          columnIndex: null,
+          note: "Cleared grid progress marks"
+        })
+      }
+    });
+    setInstructionsNotice("Grid progress marks cleared.");
   }
 
   async function handleInstructionVerbosityChange(nextVerbosity: InstructionVerbosity) {
@@ -1709,7 +1948,10 @@ export default function App() {
   }
 
   function renderInstructionsScreen() {
-    const instructionGrid = activeProject?.derived.instructionGrid;
+    const instructionGrid = activeProject?.gridWorkspace?.currentGrid ?? activeProject?.derived.instructionGrid;
+    const sourceShapeGrid = activeProject?.gridWorkspace?.sourceShapeGrid ?? activeProject?.derived.instructionGrid;
+    const completedCellKeys = new Set(activeProject?.gridWorkspace?.completedCellKeys ?? []);
+    const gridHistory = activeProject?.gridWorkspace?.editHistory ?? [];
 
     return (
       <section className="surface">
@@ -1729,10 +1971,20 @@ export default function App() {
                 </select>
               </label>
               <button className="secondary-btn" onClick={handleRegenerateInstructions}>
-                Regenerate Grid
+                Generate New Grid From Shape
               </button>
               <button className="secondary-btn" onClick={handleExportInstructionGridCsv} disabled={!instructionGrid || instructionGrid.rowCount === 0}>
                 Export Grid CSV
+              </button>
+              <label className="inline-control">
+                Grid Click Mode
+                <select value={gridClickMode} onChange={(event) => setGridClickMode(event.target.value as "edit" | "progress")}>
+                  <option value="edit">Edit Stitches</option>
+                  <option value="progress">Track Progress</option>
+                </select>
+              </label>
+              <button className="secondary-btn" onClick={handleClearGridProgress} disabled={!activeProject.gridWorkspace || completedCellKeys.size === 0}>
+                Clear Grid Progress
               </button>
               <button className="primary-btn" onClick={handleSaveProject}>
                 Save Progress
@@ -1743,8 +1995,13 @@ export default function App() {
               <>
                 <p className="grid-summary">
                   {instructionGrid.rowCount} rows x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
-                  Numbered cells are stitches inside the derived shape.
+                  Click cells in <strong>{gridClickMode === "edit" ? "Edit Stitches" : "Track Progress"}</strong> mode.
                 </p>
+                {sourceShapeGrid && activeProject.gridWorkspace && (
+                  <p className="grid-summary">
+                    Shape grid: {sourceShapeGrid.numberedCellCount} cells. Editable grid progress: {completedCellKeys.size} completed cells.
+                  </p>
+                )}
                 <div className="grid-preview-wrap">
                   <table className="grid-preview-table">
                     <thead>
@@ -1759,14 +2016,34 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {instructionGrid.rows.map((row) => (
+                      {instructionGrid.rows.map((row, rowIndex) => (
                         <tr key={`${row.sectionId}_${row.sectionRowNumber}_${row.projectRowNumber}`}>
                           <td className="grid-meta-cell">{row.projectRowNumber}</td>
                           <td className="grid-meta-cell">{row.sectionId}</td>
                           <td className="grid-meta-cell">{row.sectionRowNumber}</td>
                           <td className="grid-meta-cell">{row.occupiedStitches}</td>
                           {row.cells.map((cell, index) => (
-                            <td key={`${row.projectRowNumber}_${index}`} className={`grid-stitch-cell ${cell === null ? "empty" : ""}`}>
+                            <td
+                              key={`${row.projectRowNumber}_${index}`}
+                              className={[
+                                "grid-stitch-cell",
+                                cell === null ? "empty" : "",
+                                completedCellKeys.has(gridCellProgressKey(rowIndex, index)) ? "completed" : "",
+                                gridClickMode === "edit" ? "edit-mode" : "progress-mode"
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
+                              onClick={() => handleGridCellClick(rowIndex, index)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  handleGridCellClick(rowIndex, index);
+                                }
+                              }}
+                              aria-label={`Grid cell row ${row.projectRowNumber}, column ${index + 1}${cell === null ? ", empty" : `, stitch ${cell}`}`}
+                            >
                               {cell ?? ""}
                             </td>
                           ))}
@@ -1775,6 +2052,19 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+                <details className="legacy-instructions">
+                  <summary>Grid edit history ({gridHistory.length})</summary>
+                  {gridHistory.length === 0 && <p className="grid-history-empty">No grid edits yet.</p>}
+                  {gridHistory.length > 0 && (
+                    <ol className="grid-history-list">
+                      {[...gridHistory].reverse().map((entry) => (
+                        <li key={entry.id}>
+                          {new Date(entry.timestamp).toLocaleString()}: {entry.note}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </details>
               </>
             )}
             {!instructionGrid && <p>No instruction grid available for this project.</p>}

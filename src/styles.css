@@ -344,11 +344,36 @@ select {
   background: #1d334a;
   color: #eef6ff;
   font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
 }
 
 .grid-stitch-cell.empty {
   background: #0d1622;
   color: #627892;
+}
+
+.grid-stitch-cell.edit-mode:hover {
+  background: #274462;
+}
+
+.grid-stitch-cell.progress-mode:hover {
+  background: #24403a;
+}
+
+.grid-stitch-cell.completed {
+  background: #2f6b4f;
+  color: #f2fff6;
+}
+
+.grid-stitch-cell.empty.completed {
+  background: #0d1622;
+  color: #627892;
+}
+
+.grid-stitch-cell:focus {
+  outline: 2px solid #89c3ff;
+  outline-offset: -2px;
 }
 
 .legacy-instructions {
@@ -359,6 +384,19 @@ select {
   cursor: pointer;
   color: #d4dfec;
   margin-bottom: 8px;
+}
+
+.grid-history-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.grid-history-empty {
+  margin: 8px 0 0;
+  color: #9fb2c9;
+  font-size: 0.9rem;
 }
 
 .error-banner {
