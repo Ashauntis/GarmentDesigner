@@ -7,6 +7,7 @@ import type {
   GaugeProfile,
   GaugeProfileSnapshot,
   Geometry,
+  InstructionGrid,
   InstructionVerbosity,
   PersonProfile,
   PersonProfileSnapshot,
@@ -278,11 +279,20 @@ function cmDistance(p1: Point, p2: Point): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-function sectionWidthAtY(points: Point[], y: number): number {
-  if (points.length < 3) {
-    return 0;
-  }
+interface RowPlan {
+  targetStitches: number;
+  leadInStitches: number;
+  segmentStitches: number[];
+  gapStitches: number[];
+  layoutKey: string;
+  layoutNote: string;
+}
 
+function stitchWord(count: number): string {
+  return count === 1 ? "stitch" : "stitches";
+}
+
+function intersectionsAtY(points: Point[], y: number): number[] {
   const intersections: number[] = [];
   for (let i = 0; i < points.length; i += 1) {
     const p1 = points[i];
@@ -301,14 +311,110 @@ function sectionWidthAtY(points: Point[], y: number): number {
     const x = p1.x + ratio * (p2.x - p1.x);
     intersections.push(x);
   }
+  intersections.sort((a, b) => a - b);
+  return intersections;
+}
 
-  if (intersections.length < 2) {
-    const xs = points.map((point) => point.x);
-    return Math.max(...xs) - Math.min(...xs);
+function sectionSpansAtY(
+  points: Point[],
+  y: number,
+  minX: number,
+  maxX: number,
+  options?: { fallbackToBounds?: boolean }
+): Array<{ start: number; end: number }> {
+  const fallbackToBounds = options?.fallbackToBounds ?? true;
+  const sampled = [y, y + 0.0001, y - 0.0001]
+    .map((sampleY) => intersectionsAtY(points, sampleY))
+    .map((xs) => ({
+      xs,
+      usableCount: xs.length - (xs.length % 2)
+    }))
+    .sort((a, b) => b.usableCount - a.usableCount);
+
+  const chosen = sampled[0];
+  if (!chosen || chosen.usableCount < 2) {
+    return fallbackToBounds ? [{ start: minX, end: maxX }] : [];
   }
 
-  intersections.sort((a, b) => a - b);
-  return intersections[intersections.length - 1] - intersections[0];
+  const spans: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < chosen.usableCount; i += 2) {
+    const start = chosen.xs[i];
+    const end = chosen.xs[i + 1];
+    if (end - start > 0.000001) {
+      spans.push({ start, end });
+    }
+  }
+
+  if (spans.length > 0) {
+    return spans;
+  }
+  return fallbackToBounds ? [{ start: minX, end: maxX }] : [];
+}
+
+function compressLayout(
+  leadInStitches: number,
+  segmentStitches: number[],
+  gapStitches: number[]
+): { leadInStitches: number; segmentStitches: number[]; gapStitches: number[] } {
+  if (segmentStitches.length <= 1 || gapStitches.length === 0) {
+    return {
+      leadInStitches: Math.max(0, leadInStitches),
+      segmentStitches: [...segmentStitches],
+      gapStitches: [...gapStitches]
+    };
+  }
+
+  const nextSegments = [segmentStitches[0]];
+  const nextGaps: number[] = [];
+  for (let i = 0; i < gapStitches.length; i += 1) {
+    const gap = gapStitches[i];
+    const segment = segmentStitches[i + 1] ?? 0;
+    if (gap <= 0) {
+      nextSegments[nextSegments.length - 1] += segment;
+      continue;
+    }
+    nextGaps.push(gap);
+    nextSegments.push(segment);
+  }
+
+  return {
+    leadInStitches: Math.max(0, leadInStitches),
+    segmentStitches: nextSegments,
+    gapStitches: nextGaps
+  };
+}
+
+function buildRowLayoutNote(layout: {
+  leadInStitches: number;
+  segmentStitches: number[];
+  gapStitches: number[];
+}): string {
+  const { leadInStitches, segmentStitches, gapStitches } = layout;
+  if (segmentStitches.length === 0) {
+    return "";
+  }
+  if (leadInStitches <= 0 && gapStitches.length === 0) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  if (leadInStitches > 0) {
+    parts.push(`skip ${leadInStitches} ${stitchWord(leadInStitches)} before start`);
+  }
+
+  parts.push(`work ${segmentStitches[0]} ${stitchWord(segmentStitches[0])}`);
+  for (let i = 0; i < gapStitches.length; i += 1) {
+    const gap = gapStitches[i];
+    const segment = segmentStitches[i + 1] ?? 0;
+    parts.push(`skip ${gap} ${stitchWord(gap)}`);
+    parts.push(`work ${segment} ${stitchWord(segment)}`);
+  }
+
+  return `layout: ${parts.join(", ")}`;
+}
+
+function withLayoutNote(baseText: string, rowPlan: RowPlan): string {
+  return rowPlan.layoutNote ? `${baseText}; ${rowPlan.layoutNote}` : baseText;
 }
 
 function rowTargetsForSection(args: {
@@ -316,41 +422,75 @@ function rowTargetsForSection(args: {
   stitchesPer10Cm: number;
   rowsPer10Cm: number;
   roundingPolicy: Project["roundingPolicy"];
-}): { rowCount: number; targets: number[] } {
+}): { rowCount: number; rows: RowPlan[] } {
   const { points, stitchesPer10Cm, rowsPer10Cm, roundingPolicy } = args;
+  const fallbackRowCount = Math.max(roundingPolicy.row.step, 1);
+  const fallbackTarget = Math.max(roundingPolicy.stitch.step, 1);
   if (points.length < 3) {
-    return { rowCount: Math.max(roundingPolicy.row.step, 1), targets: [Math.max(roundingPolicy.stitch.step, 1)] };
+    return {
+      rowCount: fallbackRowCount,
+      rows: Array.from({ length: fallbackRowCount }, () => ({
+        targetStitches: fallbackTarget,
+        leadInStitches: 0,
+        segmentStitches: [fallbackTarget],
+        gapStitches: [],
+        layoutKey: `0|${fallbackTarget}|`,
+        layoutNote: ""
+      }))
+    };
   }
 
+  const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const heightCm = Math.max(maxY - minY, 0.01);
   const rowCount = applyRounding((heightCm / 10) * rowsPer10Cm, roundingPolicy.row.mode, roundingPolicy.row.step);
 
-  const targets: number[] = [];
+  const rows: RowPlan[] = [];
   for (let i = 0; i < rowCount; i += 1) {
     const y = minY + ((i + 0.5) / rowCount) * heightCm;
-    const widthCm = Math.max(sectionWidthAtY(points, y), 0.01);
-    const rawStitches = (widthCm / 10) * stitchesPer10Cm;
-    targets.push(applyRounding(rawStitches, roundingPolicy.stitch.mode, roundingPolicy.stitch.step));
+    const spans = sectionSpansAtY(points, y, minX, maxX);
+    const segmentStitchesRaw = spans.map((span) =>
+      applyRounding(((Math.max(span.end - span.start, 0.01) / 10) * stitchesPer10Cm), roundingPolicy.stitch.mode, roundingPolicy.stitch.step)
+    );
+    const leadInRaw = ((spans[0].start - minX) / 10) * stitchesPer10Cm;
+    const gapStitchesRaw = spans.slice(0, -1).map((span, index) => {
+      const next = spans[index + 1];
+      const raw = ((next.start - span.end) / 10) * stitchesPer10Cm;
+      return Math.max(0, Math.round(raw));
+    });
+
+    const compressed = compressLayout(Math.max(0, Math.round(leadInRaw)), segmentStitchesRaw, gapStitchesRaw);
+    const targetStitches = compressed.segmentStitches.reduce((sum, value) => sum + value, 0);
+    const layoutNote = buildRowLayoutNote(compressed);
+    rows.push({
+      targetStitches: Math.max(targetStitches, fallbackTarget),
+      leadInStitches: compressed.leadInStitches,
+      segmentStitches: compressed.segmentStitches,
+      gapStitches: compressed.gapStitches,
+      layoutKey: `${compressed.leadInStitches}|${compressed.segmentStitches.join(".")}|${compressed.gapStitches.join(".")}`,
+      layoutNote
+    });
   }
 
   return {
     rowCount,
-    targets
+    rows
   };
 }
 
 function generateSectionInstructions(args: {
   sectionId: string;
-  rowTargets: number[];
+  rowPlans: RowPlan[];
   startRow: number;
   startingStitches: number;
   verbosity: InstructionVerbosity;
 }): { instructions: Project["instructions"]; endRow: number; endingStitches: number } {
-  const { sectionId, rowTargets, startRow, startingStitches, verbosity } = args;
-  if (rowTargets.length === 0) {
+  const { sectionId, rowPlans, startRow, startingStitches, verbosity } = args;
+  if (rowPlans.length === 0) {
     return { instructions: [], endRow: startRow - 1, endingStitches: startingStitches };
   }
 
@@ -359,15 +499,16 @@ function generateSectionInstructions(args: {
   let spanStart = startRow;
 
   if (verbosity === "verbose") {
-    for (let i = 0; i < rowTargets.length; i += 1) {
+    for (let i = 0; i < rowPlans.length; i += 1) {
       const rowNumber = startRow + i;
-      const next = rowTargets[i];
+      const rowPlan = rowPlans[i];
+      const next = rowPlan.targetStitches;
       if (next === currentStitches) {
         instructions.push({
           id: "",
           rowStart: rowNumber,
           rowEnd: rowNumber,
-          text: `Work row ${rowNumber} even at ${next} stitches (${sectionId})`
+          text: withLayoutNote(`Work row ${rowNumber} even at ${next} stitches (${sectionId})`, rowPlan)
         });
       } else {
         const delta = next - currentStitches;
@@ -375,7 +516,10 @@ function generateSectionInstructions(args: {
           id: "",
           rowStart: rowNumber,
           rowEnd: rowNumber,
-          text: `${delta > 0 ? "Increase" : "Decrease"} ${Math.abs(delta)} stitch${Math.abs(delta) === 1 ? "" : "es"} to ${next} stitches (${sectionId})`
+          text: withLayoutNote(
+            `${delta > 0 ? "Increase" : "Decrease"} ${Math.abs(delta)} ${stitchWord(Math.abs(delta))} to ${next} stitches (${sectionId})`,
+            rowPlan
+          )
         });
       }
       currentStitches = next;
@@ -383,15 +527,30 @@ function generateSectionInstructions(args: {
 
     return {
       instructions,
-      endRow: startRow + rowTargets.length - 1,
+      endRow: startRow + rowPlans.length - 1,
       endingStitches: currentStitches
     };
   }
 
-  for (let i = 0; i < rowTargets.length; i += 1) {
+  let currentLayoutPlan = rowPlans[0];
+  for (let i = 0; i < rowPlans.length; i += 1) {
     const rowNumber = startRow + i;
-    const next = rowTargets[i];
+    const rowPlan = rowPlans[i];
+    const next = rowPlan.targetStitches;
     if (next === currentStitches) {
+      if (rowPlan.layoutKey !== currentLayoutPlan.layoutKey) {
+        const spanEnd = rowNumber - 1;
+        if (spanStart <= spanEnd) {
+          instructions.push({
+            id: "",
+            rowStart: spanStart,
+            rowEnd: spanEnd,
+            text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
+          });
+        }
+        spanStart = rowNumber;
+        currentLayoutPlan = rowPlan;
+      }
       continue;
     }
 
@@ -401,7 +560,7 @@ function generateSectionInstructions(args: {
         id: "",
         rowStart: spanStart,
         rowEnd: spanEnd,
-        text: `Work even at ${currentStitches} stitches (${sectionId})`
+        text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
       });
     }
 
@@ -411,24 +570,129 @@ function generateSectionInstructions(args: {
       id: "",
       rowStart: rowNumber,
       rowEnd: rowNumber,
-      text: `${action} ${Math.abs(delta)} stitch${Math.abs(delta) === 1 ? "" : "es"} to ${next} stitches (${sectionId})`
+      text: withLayoutNote(`${action} ${Math.abs(delta)} ${stitchWord(Math.abs(delta))} to ${next} stitches (${sectionId})`, rowPlan)
     });
 
     currentStitches = next;
     spanStart = rowNumber + 1;
+    currentLayoutPlan = rowPlans[i + 1] ?? rowPlan;
   }
 
-  const endRow = startRow + rowTargets.length - 1;
+  const endRow = startRow + rowPlans.length - 1;
   if (spanStart <= endRow) {
     instructions.push({
       id: "",
       rowStart: spanStart,
       rowEnd: endRow,
-      text: `Work even at ${currentStitches} stitches (${sectionId})`
+      text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
     });
   }
 
   return { instructions, endRow, endingStitches: currentStitches };
+}
+
+function rowPlanGridWidth(rowPlan: RowPlan): number {
+  return rowPlan.leadInStitches + rowPlan.segmentStitches.reduce((sum, value) => sum + value, 0) + rowPlan.gapStitches.reduce((sum, value) => sum + value, 0);
+}
+
+const GRID_CELL_COVERAGE_THRESHOLD = 0.5;
+const GRID_ROW_SAMPLE_OFFSETS = [0.2, 0.5, 0.8];
+
+function buildInstructionGrid(args: {
+  sectionPlans: Array<{ sectionId: string; points: Point[]; rowPlans: RowPlan[] }>;
+  stitchesPer10Cm: number;
+}): InstructionGrid {
+  const { sectionPlans, stitchesPer10Cm } = args;
+  const allPoints = sectionPlans.flatMap((section) => section.points);
+  const stitchWidthCm = stitchesPer10Cm > 0 ? 10 / stitchesPer10Cm : 0.5;
+  const globalMinX = allPoints.length > 0 ? Math.min(...allPoints.map((point) => point.x)) : 0;
+  const globalMaxX = allPoints.length > 0 ? Math.max(...allPoints.map((point) => point.x)) : 0;
+  const globalWidthCm = Math.max(globalMaxX - globalMinX, 0.01);
+  const columnCount = allPoints.length > 0 ? Math.max(1, Math.ceil(globalWidthCm / stitchWidthCm)) : 0;
+  const rows: InstructionGrid["rows"] = [];
+  let nextCellNumber = 1;
+  let projectRowNumber = 2;
+
+  for (const section of sectionPlans) {
+    const ys = section.points.map((point) => point.y);
+    const xs = section.points.map((point) => point.x);
+    const minY = ys.length > 0 ? Math.min(...ys) : 0;
+    const maxY = ys.length > 0 ? Math.max(...ys) : 0;
+    const minX = xs.length > 0 ? Math.min(...xs) : globalMinX;
+    const maxX = xs.length > 0 ? Math.max(...xs) : globalMaxX;
+    const heightCm = Math.max(maxY - minY, 0.01);
+    const rowCount = Math.max(section.rowPlans.length, 1);
+    const rowBandHeightCm = heightCm / rowCount;
+
+    for (let rowIndex = 0; rowIndex < section.rowPlans.length; rowIndex += 1) {
+      const rowPlan = section.rowPlans[rowIndex];
+      const cells: Array<number | null> = Array.from({ length: columnCount }, () => null);
+      const rowBandTop = minY + (rowIndex / rowCount) * heightCm;
+
+      for (let col = 0; col < cells.length; col += 1) {
+        const cellStart = globalMinX + col * stitchWidthCm;
+        const cellEnd = cellStart + stitchWidthCm;
+        const coverageRatio =
+          GRID_ROW_SAMPLE_OFFSETS.reduce((sum, offset) => {
+            const sampleY = rowBandTop + rowBandHeightCm * offset;
+            const spans = sectionSpansAtY(section.points, sampleY, minX, maxX, { fallbackToBounds: false });
+            const overlapWidth = spans.reduce((overlapSum, span) => {
+              const overlap = Math.max(0, Math.min(cellEnd, span.end) - Math.max(cellStart, span.start));
+              return overlapSum + overlap;
+            }, 0);
+            return sum + overlapWidth / stitchWidthCm;
+          }, 0) / GRID_ROW_SAMPLE_OFFSETS.length;
+
+        if (coverageRatio < GRID_CELL_COVERAGE_THRESHOLD) {
+          continue;
+        }
+        cells[col] = nextCellNumber;
+        nextCellNumber += 1;
+      }
+
+      rows.push({
+        projectRowNumber,
+        sectionId: section.sectionId,
+        sectionRowNumber: rowIndex + 1,
+        occupiedStitches: rowPlan.targetStitches,
+        cells
+      });
+      projectRowNumber += 1;
+    }
+  }
+
+  return {
+    columnCount,
+    rowCount: rows.length,
+    numberedCellCount: nextCellNumber - 1,
+    rows
+  };
+}
+
+function csvEscape(value: string | number | null): string {
+  if (value === null) {
+    return "";
+  }
+  const text = String(value);
+  if (!/[",\n]/.test(text)) {
+    return text;
+  }
+  return `"${text.replace(/"/g, "\"\"")}"`;
+}
+
+function instructionGridToCsv(grid: InstructionGrid): string {
+  const header = ["project_row", "section_id", "section_row", "occupied_stitches"];
+  for (let col = 0; col < grid.columnCount; col += 1) {
+    header.push(`c${col + 1}`);
+  }
+
+  const lines = [header.map(csvEscape).join(",")];
+  for (const row of grid.rows) {
+    const values: Array<string | number | null> = [row.projectRowNumber, row.sectionId, row.sectionRowNumber, row.occupiedStitches, ...row.cells];
+    lines.push(values.map(csvEscape).join(","));
+  }
+
+  return `${lines.join("\n")}\n`;
 }
 
 function recalculateProject(project: Project, verbosity: InstructionVerbosity): Project {
@@ -449,7 +713,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
 
   const sectionPlans = project.geometryOverrideCm.sections.map((section) => {
     const points = section.pointLoop.map((id) => pointMap.get(id)).filter(Boolean) as Point[];
-    const { rowCount, targets } = rowTargetsForSection({
+    const { rowCount, rows } = rowTargetsForSection({
       points,
       stitchesPer10Cm,
       rowsPer10Cm,
@@ -457,8 +721,9 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     });
     return {
       sectionId: section.id,
+      points,
       rowCount,
-      rowTargets: targets
+      rowPlans: rows
     };
   });
 
@@ -466,10 +731,14 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     sectionId: plan.sectionId,
     count: plan.rowCount
   }));
+  const instructionGrid = buildInstructionGrid({
+    sectionPlans,
+    stitchesPer10Cm
+  });
 
-  const firstTarget = sectionPlans[0]?.rowTargets[0] ?? Math.max(project.roundingPolicy.stitch.step, 1);
+  const firstTarget = sectionPlans[0]?.rowPlans[0]?.targetStitches ?? Math.max(project.roundingPolicy.stitch.step, 1);
   const lastPlan = sectionPlans[sectionPlans.length - 1];
-  const lastTarget = lastPlan?.rowTargets[lastPlan.rowTargets.length - 1] ?? firstTarget;
+  const lastTarget = lastPlan?.rowPlans[lastPlan.rowPlans.length - 1]?.targetStitches ?? firstTarget;
 
   const instructions: Project["instructions"] = [
     {
@@ -485,7 +754,7 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
   for (const plan of sectionPlans) {
     const generated = generateSectionInstructions({
       sectionId: plan.sectionId,
-      rowTargets: plan.rowTargets,
+      rowPlans: plan.rowPlans,
       startRow: rowCursor,
       startingStitches: currentStitches,
       verbosity
@@ -518,7 +787,8 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     ...project,
     derived: {
       edgeStitches,
-      sectionRows
+      sectionRows,
+      instructionGrid
     },
     instructions: withIds,
     progress: {
@@ -951,11 +1221,32 @@ export default function App() {
       return;
     }
     setActiveProject(recalculateProject(activeProject, preferences.instructionVerbosity));
-    setInstructionsNotice(
-      preferences.instructionVerbosity === "verbose"
-        ? "Verbose instructions regenerated."
-        : "Grouped instructions regenerated."
-    );
+    setInstructionsNotice("Instruction grid regenerated.");
+  }
+
+  function handleExportInstructionGridCsv() {
+    if (!activeProject?.derived.instructionGrid) {
+      setInstructionsNotice("No instruction grid available to export.");
+      return;
+    }
+
+    const csv = instructionGridToCsv(activeProject.derived.instructionGrid);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const slug = (activeProject.name || activeProject.id)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "garment-project";
+
+    anchor.href = url;
+    anchor.download = `${slug}-instruction-grid.csv`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+
+    setInstructionsNotice(`Exported CSV grid (${activeProject.derived.instructionGrid.rowCount} rows).`);
   }
 
   async function handleInstructionVerbosityChange(nextVerbosity: InstructionVerbosity) {
@@ -1418,15 +1709,17 @@ export default function App() {
   }
 
   function renderInstructionsScreen() {
+    const instructionGrid = activeProject?.derived.instructionGrid;
+
     return (
       <section className="surface">
-        <h2>Instructions + Progress</h2>
+        <h2>Instruction Grid + Progress</h2>
         {!activeProject && <p>Open a project to view instructions.</p>}
         {activeProject && (
           <>
             <div className="inline-actions">
               <label className="inline-control">
-                Instruction Detail
+                Legacy Text Detail
                 <select
                   value={preferences.instructionVerbosity}
                   onChange={(event) => void handleInstructionVerbosityChange(event.target.value as InstructionVerbosity)}
@@ -1436,20 +1729,65 @@ export default function App() {
                 </select>
               </label>
               <button className="secondary-btn" onClick={handleRegenerateInstructions}>
-                Regenerate Instructions
+                Regenerate Grid
+              </button>
+              <button className="secondary-btn" onClick={handleExportInstructionGridCsv} disabled={!instructionGrid || instructionGrid.rowCount === 0}>
+                Export Grid CSV
               </button>
               <button className="primary-btn" onClick={handleSaveProject}>
                 Save Progress
               </button>
             </div>
             {instructionsNotice && <p className="field-note">{instructionsNotice}</p>}
-            <ol>
-              {activeProject.instructions.map((instruction) => (
-                <li key={instruction.id}>
-                  Rows {instruction.rowStart}-{instruction.rowEnd}: {instruction.text}
-                </li>
-              ))}
-            </ol>
+            {instructionGrid && (
+              <>
+                <p className="grid-summary">
+                  {instructionGrid.rowCount} rows x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
+                  Numbered cells are stitches inside the derived shape.
+                </p>
+                <div className="grid-preview-wrap">
+                  <table className="grid-preview-table">
+                    <thead>
+                      <tr>
+                        <th>Row</th>
+                        <th>Section</th>
+                        <th>Sec Row</th>
+                        <th>Sts</th>
+                        {Array.from({ length: instructionGrid.columnCount }, (_, index) => (
+                          <th key={`col_${index + 1}`}>C{index + 1}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {instructionGrid.rows.map((row) => (
+                        <tr key={`${row.sectionId}_${row.sectionRowNumber}_${row.projectRowNumber}`}>
+                          <td className="grid-meta-cell">{row.projectRowNumber}</td>
+                          <td className="grid-meta-cell">{row.sectionId}</td>
+                          <td className="grid-meta-cell">{row.sectionRowNumber}</td>
+                          <td className="grid-meta-cell">{row.occupiedStitches}</td>
+                          {row.cells.map((cell, index) => (
+                            <td key={`${row.projectRowNumber}_${index}`} className={`grid-stitch-cell ${cell === null ? "empty" : ""}`}>
+                              {cell ?? ""}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {!instructionGrid && <p>No instruction grid available for this project.</p>}
+            <details className="legacy-instructions">
+              <summary>Legacy text instructions (fallback)</summary>
+              <ol>
+                {activeProject.instructions.map((instruction) => (
+                  <li key={instruction.id}>
+                    Rows {instruction.rowStart}-{instruction.rowEnd}: {instruction.text}
+                  </li>
+                ))}
+              </ol>
+            </details>
             {activeProject.derived.sectionRows.map((section) => {
               const partial = activeProject.progress.activePartialRowBySection[section.sectionId];
               return (

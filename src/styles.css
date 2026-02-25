@@ -295,6 +295,72 @@ select {
   font-size: 0.9rem;
 }
 
+.grid-summary {
+  margin: 0 0 10px;
+  color: #c8d7e8;
+  font-size: 0.9rem;
+}
+
+.grid-preview-wrap {
+  border: 1px solid #334a65;
+  border-radius: 10px;
+  background: #0d1622;
+  overflow: auto;
+  max-height: 420px;
+  margin-bottom: 12px;
+}
+
+.grid-preview-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.8rem;
+}
+
+.grid-preview-table th,
+.grid-preview-table td {
+  border: 1px solid #27384d;
+  padding: 4px 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.grid-preview-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #162435;
+  color: #dbe8f6;
+}
+
+.grid-meta-cell {
+  background: #111e2d;
+  color: #cddced;
+  text-align: left;
+}
+
+.grid-stitch-cell {
+  min-width: 42px;
+  background: #1d334a;
+  color: #eef6ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid-stitch-cell.empty {
+  background: #0d1622;
+  color: #627892;
+}
+
+.legacy-instructions {
+  margin-bottom: 12px;
+}
+
+.legacy-instructions summary {
+  cursor: pointer;
+  color: #d4dfec;
+  margin-bottom: 8px;
+}
+
 .error-banner {
   position: fixed;
   right: 16px;

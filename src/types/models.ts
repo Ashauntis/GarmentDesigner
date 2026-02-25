@@ -66,6 +66,21 @@ export interface ProjectInstruction {
   text: string;
 }
 
+export interface InstructionGridRow {
+  projectRowNumber: number;
+  sectionId: string;
+  sectionRowNumber: number;
+  occupiedStitches: number;
+  cells: Array<number | null>;
+}
+
+export interface InstructionGrid {
+  columnCount: number;
+  rowCount: number;
+  numberedCellCount: number;
+  rows: InstructionGridRow[];
+}
+
 export interface PersonProfileSnapshot {
   sourceProfileId: string | null;
   sourceProfileUpdatedAt: string | null;
@@ -100,6 +115,7 @@ export interface Project extends Metadata {
   derived: {
     edgeStitches: Array<{ edgeId: string; count: number }>;
     sectionRows: Array<{ sectionId: string; count: number }>;
+    instructionGrid?: InstructionGrid;
   };
   instructions: ProjectInstruction[];
   progress: {
