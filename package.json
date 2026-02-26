@@ -2,7 +2,7 @@
   "name": "garment-designer",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first knitting garment design MVP starter",
+  "description": "Kayla's knitting garment designer",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
