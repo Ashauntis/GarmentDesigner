@@ -2252,7 +2252,7 @@ export default function App() {
       <main className="workspace">
         <header className="workspace-header">
           <h1>{navigation.find((item) => item.screen === screen)?.label ?? "Workspace"}</h1>
-          <p>Kayla's Garmnet Designer</p>
+          <p>Kayla's Garment Designer</p>
         </header>
         <div className="workspace-body">
           {screen === "projects" && renderProjectsScreen()}

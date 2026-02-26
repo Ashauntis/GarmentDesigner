@@ -1,11 +1,4 @@
-# Garment Designer MVP Starter
-
-Electron + React starter for a local-first knitting garment designer.
-
-## Why Electron first
-
-Your platform target is Windows, macOS, and Linux. Electron supports all three with one stack. React Native desktop requires separate platform implementations and does not provide first-party Linux support.
-
+# Kayla's Garment Designer 
 ## Current scope in this starter
 
 - Local JSON storage bootstrap under app user data directory
