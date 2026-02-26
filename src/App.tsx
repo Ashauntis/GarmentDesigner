@@ -891,11 +891,13 @@ function buildInstructionGrid(args: {
         nextCellNumber += 1;
       }
 
+      const occupiedStitches = cells.filter((cell): cell is number => cell !== null).length;
+
       rows.push({
         projectRowNumber,
         sectionId: section.sectionId,
         sectionRowNumber: rowIndex + 1,
-        occupiedStitches: rowPlan.targetStitches,
+        occupiedStitches,
         cells
       });
       projectRowNumber += 1;
