@@ -20,7 +20,17 @@
       { "id": "e3", "p1": "p3", "p2": "p4", "label": "armhole" },
       { "id": "e4", "p1": "p4", "p2": "p1", "label": "increase_left" }
     ],
-    "sections": [{ "id": "s1", "name": "sleeve_panel", "pointLoop": ["p1", "p2", "p3", "p4"] }],
+    "sections": [
+      {
+        "id": "s1",
+        "name": "sleeve_panel",
+        "pointLoop": ["p1", "p2", "p3", "p4"],
+        "construction": {
+          "initialMode": "round",
+          "transitions": []
+        }
+      }
+    ],
     "constraints": [
       { "type": "mirrorX", "leftPointId": "p4", "rightPointId": "p3", "axisX": 10 }
     ]

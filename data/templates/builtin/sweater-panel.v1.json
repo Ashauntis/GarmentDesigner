@@ -20,7 +20,17 @@
       { "id": "e3", "p1": "p3", "p2": "p4", "label": "neckline" },
       { "id": "e4", "p1": "p4", "p2": "p1", "label": "side_left" }
     ],
-    "sections": [{ "id": "s1", "name": "body", "pointLoop": ["p1", "p2", "p3", "p4"] }],
+    "sections": [
+      {
+        "id": "s1",
+        "name": "body",
+        "pointLoop": ["p1", "p2", "p3", "p4"],
+        "construction": {
+          "initialMode": "flat",
+          "transitions": []
+        }
+      }
+    ],
     "constraints": [
       { "type": "mirrorX", "leftPointId": "p1", "rightPointId": "p2", "axisX": 25 },
       { "type": "mirrorX", "leftPointId": "p4", "rightPointId": "p3", "axisX": 25 }

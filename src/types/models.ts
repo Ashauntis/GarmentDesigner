@@ -1,6 +1,7 @@
 export type DisplayUnit = "in" | "cm";
 export type RoundingMode = "nearest" | "ceil" | "floor";
 export type InstructionVerbosity = "grouped" | "verbose";
+export type SectionConstructionMode = "flat" | "round";
 
 export interface Metadata {
   id: string;
@@ -42,6 +43,18 @@ export interface Section {
   id: string;
   name: string;
   pointLoop: string[];
+  construction?: SectionConstructionSpec;
+}
+
+export interface SectionConstructionTransition {
+  id: string;
+  atOffsetCm: number;
+  mode: SectionConstructionMode;
+}
+
+export interface SectionConstructionSpec {
+  initialMode: SectionConstructionMode;
+  transitions: SectionConstructionTransition[];
 }
 
 export interface Geometry {
@@ -64,12 +77,14 @@ export interface ProjectInstruction {
   rowStart: number;
   rowEnd: number;
   text: string;
+  workMode?: SectionConstructionMode | "setup" | "transition" | "finish";
 }
 
 export interface InstructionGridRow {
   projectRowNumber: number;
   sectionId: string;
   sectionRowNumber: number;
+  workMode: SectionConstructionMode;
   occupiedStitches: number;
   cells: Array<number | null>;
 }

@@ -17,6 +17,9 @@ import type {
   ProjectGridWorkspace,
   ProjectSummary,
   RoundingMode,
+  Section,
+  SectionConstructionMode,
+  SectionConstructionSpec,
   Template
 } from "./types/models";
 
@@ -82,9 +85,92 @@ function cloneGeometry(geometry?: Geometry): Geometry {
   return {
     points: geometry.points.map((point) => ({ ...point })),
     edges: geometry.edges.map((edge) => ({ ...edge })),
-    sections: geometry.sections.map((section) => ({ ...section, pointLoop: [...section.pointLoop] })),
+    sections: geometry.sections.map((section) => ({
+      ...section,
+      pointLoop: [...section.pointLoop],
+      construction: section.construction
+        ? {
+            initialMode: section.construction.initialMode,
+            transitions: (section.construction.transitions ?? []).map((transition) => ({ ...transition }))
+          }
+        : undefined
+    })),
     constraints: geometry.constraints.map((constraint) => ({ ...constraint }))
   };
+}
+
+function defaultSectionConstruction(): SectionConstructionSpec {
+  return {
+    initialMode: "flat",
+    transitions: []
+  };
+}
+
+function normalizeSectionConstruction(
+  construction: Section["construction"] | undefined,
+  sectionHeightCm: number
+): SectionConstructionSpec {
+  const base = construction ?? defaultSectionConstruction();
+  const initialMode: SectionConstructionMode = base.initialMode === "round" ? "round" : "flat";
+  const clampedHeight = Math.max(sectionHeightCm, 0);
+  const rawTransitions = Array.isArray(base.transitions) ? base.transitions : [];
+
+  const prepared = rawTransitions
+    .map((transition, index) => {
+      const offset = Number.isFinite(transition?.atOffsetCm) ? transition.atOffsetCm : 0;
+      return {
+        id: typeof transition?.id === "string" && transition.id ? transition.id : `trans_${index + 1}`,
+        atOffsetCm: Math.min(Math.max(offset, 0), clampedHeight),
+        mode: (transition?.mode === "round" ? "round" : "flat") as SectionConstructionMode,
+        order: index
+      };
+    })
+    .sort((a, b) => (a.atOffsetCm === b.atOffsetCm ? a.order - b.order : a.atOffsetCm - b.atOffsetCm));
+
+  const dedupedByOffset = new Map<number, (typeof prepared)[number]>();
+  for (const entry of prepared) {
+    dedupedByOffset.set(entry.atOffsetCm, entry);
+  }
+
+  const deduped = [...dedupedByOffset.values()].sort((a, b) => a.atOffsetCm - b.atOffsetCm);
+
+  const transitions: SectionConstructionSpec["transitions"] = [];
+  let currentMode: SectionConstructionMode = initialMode;
+  for (const entry of deduped) {
+    if (entry.mode === currentMode) {
+      continue;
+    }
+    transitions.push({
+      id: entry.id,
+      atOffsetCm: round2(entry.atOffsetCm),
+      mode: entry.mode
+    });
+    currentMode = entry.mode;
+  }
+
+  return {
+    initialMode,
+    transitions
+  };
+}
+
+function resolveSectionConstructionMode(spec: SectionConstructionSpec, offsetCmFromTop: number): SectionConstructionMode {
+  let mode = spec.initialMode;
+  for (const transition of spec.transitions) {
+    if (offsetCmFromTop + 1e-9 < transition.atOffsetCm) {
+      break;
+    }
+    mode = transition.mode;
+  }
+  return mode;
+}
+
+function sectionHeightFromPoints(points: Point[]): number {
+  if (points.length === 0) {
+    return 0;
+  }
+  const ys = points.map((point) => point.y);
+  return Math.max(Math.max(...ys) - Math.min(...ys), 0);
 }
 
 function hasGeometry(geometry?: Geometry): boolean {
@@ -288,6 +374,7 @@ interface RowPlan {
   gapStitches: number[];
   layoutKey: string;
   layoutNote: string;
+  workMode: SectionConstructionMode;
 }
 
 function stitchWord(count: number): string {
@@ -419,15 +506,51 @@ function withLayoutNote(baseText: string, rowPlan: RowPlan): string {
   return rowPlan.layoutNote ? `${baseText}; ${rowPlan.layoutNote}` : baseText;
 }
 
+function stepNoun(mode: SectionConstructionMode): "row" | "round" {
+  return mode === "round" ? "round" : "row";
+}
+
+function workEvenInstructionText(count: number, sectionId: string, rowPlan: RowPlan): string {
+  if (rowPlan.workMode === "round") {
+    return withLayoutNote(`Work even in the round at ${count} stitches (${sectionId})`, rowPlan);
+  }
+  return withLayoutNote(`Work even at ${count} stitches (${sectionId})`, rowPlan);
+}
+
+function workVerboseInstructionText(rowNumber: number, count: number, sectionId: string, rowPlan: RowPlan): string {
+  return withLayoutNote(`Work ${stepNoun(rowPlan.workMode)} ${rowNumber} even at ${count} stitches (${sectionId})`, rowPlan);
+}
+
+function shapingInstructionText(
+  delta: number,
+  next: number,
+  sectionId: string,
+  rowPlan: RowPlan
+): string {
+  const action = delta > 0 ? "Increase" : "Decrease";
+  const base = `${action} ${Math.abs(delta)} ${stitchWord(Math.abs(delta))} to ${next} stitches (${sectionId})`;
+  const withRoundNote = rowPlan.workMode === "round" ? `${base} in the round` : base;
+  return withLayoutNote(withRoundNote, rowPlan);
+}
+
+function transitionInstructionText(nextMode: SectionConstructionMode, stepNumber: number, stitchCount: number): string {
+  if (nextMode === "round") {
+    return `Join in the round before round ${stepNumber} at ${stitchCount} stitches`;
+  }
+  return `Switch to working flat before row ${stepNumber} at ${stitchCount} stitches`;
+}
+
 function rowTargetsForSection(args: {
   points: Point[];
   stitchesPer10Cm: number;
   rowsPer10Cm: number;
   roundingPolicy: Project["roundingPolicy"];
+  construction?: Section["construction"];
 }): { rowCount: number; rows: RowPlan[] } {
-  const { points, stitchesPer10Cm, rowsPer10Cm, roundingPolicy } = args;
+  const { points, stitchesPer10Cm, rowsPer10Cm, roundingPolicy, construction } = args;
   const fallbackRowCount = Math.max(roundingPolicy.row.step, 1);
   const fallbackTarget = Math.max(roundingPolicy.stitch.step, 1);
+  const fallbackConstruction = normalizeSectionConstruction(construction, 0);
   if (points.length < 3) {
     return {
       rowCount: fallbackRowCount,
@@ -437,7 +560,8 @@ function rowTargetsForSection(args: {
         segmentStitches: [fallbackTarget],
         gapStitches: [],
         layoutKey: `0|${fallbackTarget}|`,
-        layoutNote: ""
+        layoutNote: "",
+        workMode: fallbackConstruction.initialMode
       }))
     };
   }
@@ -449,11 +573,13 @@ function rowTargetsForSection(args: {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const heightCm = Math.max(maxY - minY, 0.01);
+  const normalizedConstruction = normalizeSectionConstruction(construction, heightCm);
   const rowCount = applyRounding((heightCm / 10) * rowsPer10Cm, roundingPolicy.row.mode, roundingPolicy.row.step);
 
   const rows: RowPlan[] = [];
   for (let i = 0; i < rowCount; i += 1) {
     const y = minY + ((i + 0.5) / rowCount) * heightCm;
+    const workMode = resolveSectionConstructionMode(normalizedConstruction, y - minY);
     const spans = sectionSpansAtY(points, y, minX, maxX);
     const segmentStitchesRaw = spans.map((span) =>
       applyRounding(((Math.max(span.end - span.start, 0.01) / 10) * stitchesPer10Cm), roundingPolicy.stitch.mode, roundingPolicy.stitch.step)
@@ -467,14 +593,15 @@ function rowTargetsForSection(args: {
 
     const compressed = compressLayout(Math.max(0, Math.round(leadInRaw)), segmentStitchesRaw, gapStitchesRaw);
     const targetStitches = compressed.segmentStitches.reduce((sum, value) => sum + value, 0);
-    const layoutNote = buildRowLayoutNote(compressed);
+    const layoutNote = workMode === "round" ? "" : buildRowLayoutNote(compressed);
     rows.push({
       targetStitches: Math.max(targetStitches, fallbackTarget),
       leadInStitches: compressed.leadInStitches,
       segmentStitches: compressed.segmentStitches,
       gapStitches: compressed.gapStitches,
       layoutKey: `${compressed.leadInStitches}|${compressed.segmentStitches.join(".")}|${compressed.gapStitches.join(".")}`,
-      layoutNote
+      layoutNote,
+      workMode
     });
   }
 
@@ -505,12 +632,22 @@ function generateSectionInstructions(args: {
       const rowNumber = startRow + i;
       const rowPlan = rowPlans[i];
       const next = rowPlan.targetStitches;
+      if (i > 0 && rowPlans[i - 1].workMode !== rowPlan.workMode) {
+        instructions.push({
+          id: "",
+          rowStart: rowNumber,
+          rowEnd: rowNumber,
+          text: transitionInstructionText(rowPlan.workMode, rowNumber, currentStitches),
+          workMode: "transition"
+        });
+      }
       if (next === currentStitches) {
         instructions.push({
           id: "",
           rowStart: rowNumber,
           rowEnd: rowNumber,
-          text: withLayoutNote(`Work row ${rowNumber} even at ${next} stitches (${sectionId})`, rowPlan)
+          text: workVerboseInstructionText(rowNumber, next, sectionId, rowPlan),
+          workMode: rowPlan.workMode
         });
       } else {
         const delta = next - currentStitches;
@@ -518,10 +655,8 @@ function generateSectionInstructions(args: {
           id: "",
           rowStart: rowNumber,
           rowEnd: rowNumber,
-          text: withLayoutNote(
-            `${delta > 0 ? "Increase" : "Decrease"} ${Math.abs(delta)} ${stitchWord(Math.abs(delta))} to ${next} stitches (${sectionId})`,
-            rowPlan
-          )
+          text: shapingInstructionText(delta, next, sectionId, rowPlan),
+          workMode: rowPlan.workMode
         });
       }
       currentStitches = next;
@@ -539,15 +674,39 @@ function generateSectionInstructions(args: {
     const rowNumber = startRow + i;
     const rowPlan = rowPlans[i];
     const next = rowPlan.targetStitches;
+
+    if (i > 0 && rowPlans[i - 1].workMode !== rowPlan.workMode) {
+      const spanEndForModeChange = rowNumber - 1;
+      if (spanStart <= spanEndForModeChange) {
+        instructions.push({
+          id: "",
+          rowStart: spanStart,
+          rowEnd: spanEndForModeChange,
+          text: workEvenInstructionText(currentStitches, sectionId, currentLayoutPlan),
+          workMode: currentLayoutPlan.workMode
+        });
+      }
+      instructions.push({
+        id: "",
+        rowStart: rowNumber,
+        rowEnd: rowNumber,
+        text: transitionInstructionText(rowPlan.workMode, rowNumber, currentStitches),
+        workMode: "transition"
+      });
+      spanStart = rowNumber;
+      currentLayoutPlan = rowPlan;
+    }
+
     if (next === currentStitches) {
-      if (rowPlan.layoutKey !== currentLayoutPlan.layoutKey) {
+      if (rowPlan.layoutKey !== currentLayoutPlan.layoutKey || rowPlan.workMode !== currentLayoutPlan.workMode) {
         const spanEnd = rowNumber - 1;
         if (spanStart <= spanEnd) {
           instructions.push({
             id: "",
             rowStart: spanStart,
             rowEnd: spanEnd,
-            text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
+            text: workEvenInstructionText(currentStitches, sectionId, currentLayoutPlan),
+            workMode: currentLayoutPlan.workMode
           });
         }
         spanStart = rowNumber;
@@ -562,17 +721,18 @@ function generateSectionInstructions(args: {
         id: "",
         rowStart: spanStart,
         rowEnd: spanEnd,
-        text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
+        text: workEvenInstructionText(currentStitches, sectionId, currentLayoutPlan),
+        workMode: currentLayoutPlan.workMode
       });
     }
 
     const delta = next - currentStitches;
-    const action = delta > 0 ? "Increase" : "Decrease";
     instructions.push({
       id: "",
       rowStart: rowNumber,
       rowEnd: rowNumber,
-      text: withLayoutNote(`${action} ${Math.abs(delta)} ${stitchWord(Math.abs(delta))} to ${next} stitches (${sectionId})`, rowPlan)
+      text: shapingInstructionText(delta, next, sectionId, rowPlan),
+      workMode: rowPlan.workMode
     });
 
     currentStitches = next;
@@ -586,7 +746,8 @@ function generateSectionInstructions(args: {
       id: "",
       rowStart: spanStart,
       rowEnd: endRow,
-      text: withLayoutNote(`Work even at ${currentStitches} stitches (${sectionId})`, currentLayoutPlan)
+      text: workEvenInstructionText(currentStitches, sectionId, currentLayoutPlan),
+      workMode: currentLayoutPlan.workMode
     });
   }
 
@@ -897,6 +1058,7 @@ function buildInstructionGrid(args: {
         projectRowNumber,
         sectionId: section.sectionId,
         sectionRowNumber: rowIndex + 1,
+        workMode: rowPlan.workMode,
         occupiedStitches,
         cells
       });
@@ -960,7 +1122,8 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
       points,
       stitchesPer10Cm,
       rowsPer10Cm,
-      roundingPolicy: project.roundingPolicy
+      roundingPolicy: project.roundingPolicy,
+      construction: section.construction
     });
     return {
       sectionId: section.id,
@@ -989,7 +1152,11 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
       id: "",
       rowStart: 1,
       rowEnd: 1,
-      text: `Cast on ${firstTarget} stitches`
+      text:
+        (sectionPlans[0]?.rowPlans[0]?.workMode ?? "flat") === "round"
+          ? `Cast on ${firstTarget} stitches and join in the round`
+          : `Cast on ${firstTarget} stitches`,
+      workMode: "setup"
     }
   ];
 
@@ -1012,7 +1179,8 @@ function recalculateProject(project: Project, verbosity: InstructionVerbosity): 
     id: "",
     rowStart: rowCursor,
     rowEnd: rowCursor,
-    text: `Bind off ${currentStitches || lastTarget} stitches`
+    text: `Bind off ${currentStitches || lastTarget} stitches`,
+    workMode: "finish"
   });
 
   const withIds = instructions.map((instruction, index) => ({
@@ -1059,6 +1227,7 @@ export default function App() {
   const [gaugeForm, setGaugeForm] = useState<GaugeFormState>(emptyGaugeForm());
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>("");
+  const [selectedSectionEditorId, setSelectedSectionEditorId] = useState<string>("");
   const [edgeLengthInput, setEdgeLengthInput] = useState<string>("");
   const [templateNameDraft, setTemplateNameDraft] = useState<string>("");
   const [edgeEditorError, setEdgeEditorError] = useState<string>("");
@@ -1159,10 +1328,32 @@ export default function App() {
 
   useEffect(() => {
     setSelectedEdgeId("");
+    setSelectedSectionEditorId("");
     setEdgeLengthInput("");
     setDragState(null);
     setEdgeEditorError("");
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    if (!activeProject) {
+      if (selectedSectionEditorId) {
+        setSelectedSectionEditorId("");
+      }
+      return;
+    }
+
+    const sections = activeProject.geometryOverrideCm.sections;
+    if (sections.length === 0) {
+      if (selectedSectionEditorId) {
+        setSelectedSectionEditorId("");
+      }
+      return;
+    }
+
+    if (!sections.some((section) => section.id === selectedSectionEditorId)) {
+      setSelectedSectionEditorId(sections[0].id);
+    }
+  }, [activeProject, selectedSectionEditorId]);
 
   useEffect(() => {
     setTemplateNameDraft(activeTemplate?.name ?? "");
@@ -1463,6 +1654,104 @@ export default function App() {
     setEdgeLengthInput(targetLength.toFixed(2));
   }
 
+  function updateSectionConstruction(
+    sectionId: string,
+    updater: (current: SectionConstructionSpec, sectionHeightCm: number) => SectionConstructionSpec
+  ) {
+    setActiveProject((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const pointMap = new Map(previous.geometryOverrideCm.points.map((point) => [point.id, point]));
+      let didUpdate = false;
+      const nextSections = previous.geometryOverrideCm.sections.map((section) => {
+        if (section.id !== sectionId) {
+          return section;
+        }
+        const sectionPoints = section.pointLoop.map((id) => pointMap.get(id)).filter(Boolean) as Point[];
+        const sectionHeightCm = sectionHeightFromPoints(sectionPoints);
+        const current = normalizeSectionConstruction(section.construction, sectionHeightCm);
+        const next = normalizeSectionConstruction(updater(current, sectionHeightCm), sectionHeightCm);
+        didUpdate = true;
+        return {
+          ...section,
+          construction: next
+        };
+      });
+
+      if (!didUpdate) {
+        return previous;
+      }
+
+      return recalculateProject(
+        {
+          ...previous,
+          geometryOverrideCm: {
+            ...previous.geometryOverrideCm,
+            sections: nextSections
+          }
+        },
+        preferences.instructionVerbosity
+      );
+    });
+  }
+
+  function handleSectionConstructionModeChange(sectionId: string, mode: SectionConstructionMode) {
+    updateSectionConstruction(sectionId, (current) => ({
+      ...current,
+      initialMode: mode
+    }));
+  }
+
+  function handleAddSectionTransition(sectionId: string) {
+    updateSectionConstruction(sectionId, (current, sectionHeightCm) => {
+      const nextMode: SectionConstructionMode =
+        (current.transitions[current.transitions.length - 1]?.mode ?? current.initialMode) === "round" ? "flat" : "round";
+      const defaultOffset = round2(Math.min(Math.max(sectionHeightCm / 2, 0), sectionHeightCm));
+      return {
+        ...current,
+        transitions: [
+          ...current.transitions,
+          {
+            id: `transition_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            atOffsetCm: defaultOffset,
+            mode: nextMode
+          }
+        ]
+      };
+    });
+  }
+
+  function handleUpdateSectionTransitionOffset(sectionId: string, transitionId: string, atOffsetCm: number) {
+    updateSectionConstruction(sectionId, (current) => ({
+      ...current,
+      transitions: current.transitions.map((transition) =>
+        transition.id === transitionId ? { ...transition, atOffsetCm } : transition
+      )
+    }));
+  }
+
+  function handleUpdateSectionTransitionMode(
+    sectionId: string,
+    transitionId: string,
+    mode: SectionConstructionMode
+  ) {
+    updateSectionConstruction(sectionId, (current) => ({
+      ...current,
+      transitions: current.transitions.map((transition) =>
+        transition.id === transitionId ? { ...transition, mode } : transition
+      )
+    }));
+  }
+
+  function handleRemoveSectionTransition(sectionId: string, transitionId: string) {
+    updateSectionConstruction(sectionId, (current) => ({
+      ...current,
+      transitions: current.transitions.filter((transition) => transition.id !== transitionId)
+    }));
+  }
+
   function handleRegenerateInstructions() {
     if (!activeProject) {
       return;
@@ -1499,7 +1788,7 @@ export default function App() {
     anchor.remove();
     URL.revokeObjectURL(url);
 
-    setInstructionsNotice(`Exported CSV grid (${exportGrid.rowCount} rows).`);
+    setInstructionsNotice(`Exported CSV grid (${exportGrid.rowCount} steps).`);
   }
 
   function handleGridCellClick(rowIndex: number, columnIndex: number) {
@@ -1845,6 +2134,16 @@ export default function App() {
   function renderDesignScreen() {
     const parsedEdgeLength = parseOptionalNumber(edgeLengthInput);
     const canApplyEdgeLength = Boolean(selectedEdgeId) && parsedEdgeLength !== null && parsedEdgeLength > 0;
+    const selectedConstructionSection = activeProject
+      ? activeGeometry.sections.find((section) => section.id === selectedSectionEditorId) ?? activeGeometry.sections[0]
+      : undefined;
+    const selectedConstructionPoints = selectedConstructionSection
+      ? (selectedConstructionSection.pointLoop.map((id) => pointById.get(id)).filter(Boolean) as Point[])
+      : [];
+    const selectedConstructionHeightCm = round2(sectionHeightFromPoints(selectedConstructionPoints));
+    const selectedConstructionSpec = selectedConstructionSection
+      ? normalizeSectionConstruction(selectedConstructionSection.construction, selectedConstructionHeightCm)
+      : null;
 
     return (
       <div className="screen-grid">
@@ -1996,6 +2295,98 @@ export default function App() {
                   </button>
                 </>
               )}
+
+              <h3>Section Construction</h3>
+              {activeGeometry.sections.length === 0 && <p>No sections available.</p>}
+              {activeGeometry.sections.length > 0 && selectedConstructionSection && selectedConstructionSpec && (
+                <>
+                  <label>
+                    Section
+                    <select value={selectedConstructionSection.id} onChange={(event) => setSelectedSectionEditorId(event.target.value)}>
+                      {activeGeometry.sections.map((section) => (
+                        <option key={section.id} value={section.id}>
+                          {section.name} ({section.id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Construction Mode
+                    <select
+                      value={selectedConstructionSpec.initialMode}
+                      onChange={(event) =>
+                        handleSectionConstructionModeChange(
+                          selectedConstructionSection.id,
+                          event.target.value === "round" ? "round" : "flat"
+                        )
+                      }
+                    >
+                      <option value="flat">Flat</option>
+                      <option value="round">In the Round</option>
+                    </select>
+                  </label>
+                  <p className="field-note">Section height: {selectedConstructionHeightCm.toFixed(2)} cm (from section top)</p>
+
+                  <div className="inline-actions">
+                    <button
+                      className="secondary-btn"
+                      onClick={() => handleAddSectionTransition(selectedConstructionSection.id)}
+                    >
+                      Add Transition
+                    </button>
+                  </div>
+
+                  {selectedConstructionSpec.transitions.length === 0 && <p>No transitions. This section stays in one mode.</p>}
+                  {selectedConstructionSpec.transitions.length > 0 && (
+                    <div className="stacked-fields">
+                      {selectedConstructionSpec.transitions.map((transition, index) => (
+                        <div key={transition.id} className="progress-row">
+                          <h3>Transition {index + 1}</h3>
+                          <label>
+                            At Height (cm from top)
+                            <input
+                              type="number"
+                              step="0.1"
+                              min={0}
+                              max={Math.max(selectedConstructionHeightCm, 0)}
+                              value={transition.atOffsetCm}
+                              onChange={(event) =>
+                                handleUpdateSectionTransitionOffset(
+                                  selectedConstructionSection.id,
+                                  transition.id,
+                                  Math.max(parseNumber(event.target.value, transition.atOffsetCm), 0)
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            Switch To
+                            <select
+                              value={transition.mode}
+                              onChange={(event) =>
+                                handleUpdateSectionTransitionMode(
+                                  selectedConstructionSection.id,
+                                  transition.id,
+                                  event.target.value === "round" ? "round" : "flat"
+                                )
+                              }
+                            >
+                              <option value="flat">Flat</option>
+                              <option value="round">In the Round</option>
+                            </select>
+                          </label>
+                          <button
+                            className="danger-btn"
+                            onClick={() => handleRemoveSectionTransition(selectedConstructionSection.id, transition.id)}
+                          >
+                            Remove Transition
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </>
           )}
         </section>
@@ -2049,7 +2440,7 @@ export default function App() {
 	                  disabled={!instructionGrid}
 	                  onChange={(event) => setShowGridSectionRowOverride(event.target.checked)}
 	                />
-	                <span>Show Sec Row</span>
+	                <span>Show Sec Step</span>
 	              </label>
 	              <button className="secondary-btn" onClick={handleClearGridProgress} disabled={!activeProject.gridWorkspace || completedCellKeys.size === 0}>
 	                Clear Grid Progress
@@ -2062,9 +2453,9 @@ export default function App() {
 	            {instructionGrid && (
 	              <>
 	                <p className="grid-summary">
-	                  {instructionGrid.rowCount} rows x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
+	                  {instructionGrid.rowCount} steps x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
 	                  Click cells in <strong>{gridClickMode === "edit" ? "Edit Stitches" : "Track Progress"}</strong> mode.
-	                  Click the row number to toggle completion for that entire row.
+	                  Click the step number to toggle completion for that entire step.
                 </p>
                 {sourceShapeGrid && activeProject.gridWorkspace && (
                   <p className="grid-summary">
@@ -2075,8 +2466,9 @@ export default function App() {
 	                  <table className="grid-preview-table">
 	                    <thead>
 	                      <tr>
-	                        <th>Row</th>
-	                        {showSectionRowNumbers && <th>Sec Row</th>}
+	                        <th>Step</th>
+	                        {showSectionRowNumbers && <th>Sec Step</th>}
+	                        <th>Mode</th>
 	                        <th>Sts</th>
 	                        {Array.from({ length: instructionGrid.columnCount }, (_, index) => (
 	                          <th key={`col_${index + 1}`}>C{index + 1}</th>
@@ -2086,7 +2478,7 @@ export default function App() {
                     <tbody>
 	                      {instructionGrid.rows.map((row, rowIndex) => {
 	                        const startsSection = rowIndex === 0 || instructionGrid.rows[rowIndex - 1]?.sectionId !== row.sectionId;
-	                        const sectionLabelColSpan = (showSectionRowNumbers ? 3 : 2) + instructionGrid.columnCount;
+	                        const sectionLabelColSpan = (showSectionRowNumbers ? 4 : 3) + instructionGrid.columnCount;
 
 	                        return (
 	                          <Fragment key={`${row.sectionId}_${row.sectionRowNumber}_${row.projectRowNumber}`}>
@@ -2129,7 +2521,7 @@ export default function App() {
                                     handleGridRowHeadingClick(rowIndex);
                                   }
                                 }}
-                                aria-label={`Toggle progress for row ${row.projectRowNumber}`}
+                                aria-label={`Toggle progress for step ${row.projectRowNumber}`}
                                 aria-pressed={rowComplete}
                               >
 	                                {row.projectRowNumber}
@@ -2137,6 +2529,7 @@ export default function App() {
 	                            );
 	                          })()}
 	                          {showSectionRowNumbers && <td className="grid-meta-cell">{row.sectionRowNumber}</td>}
+	                          <td className="grid-meta-cell">{row.workMode === "round" ? "Rnd" : "Row"}</td>
 	                          <td className="grid-meta-cell">{row.occupiedStitches}</td>
 	                          {row.cells.map((cell, index) => (
                             <td
@@ -2158,7 +2551,7 @@ export default function App() {
                                   handleGridCellClick(rowIndex, index);
                                 }
                               }}
-                              aria-label={`Grid cell row ${row.projectRowNumber}, column ${index + 1}${cell === null ? ", empty" : `, stitch ${cell}`}`}
+                              aria-label={`Grid cell step ${row.projectRowNumber}, column ${index + 1}${cell === null ? ", empty" : `, stitch ${cell}`}`}
                             >
 	                              {cell ?? ""}
 	                            </td>
@@ -2191,7 +2584,7 @@ export default function App() {
               <ol>
                 {activeProject.instructions.map((instruction) => (
                   <li key={instruction.id}>
-                    Rows {instruction.rowStart}-{instruction.rowEnd}: {instruction.text}
+                    Steps {instruction.rowStart}-{instruction.rowEnd}: {instruction.text}
                   </li>
                 ))}
               </ol>
@@ -2202,7 +2595,7 @@ export default function App() {
                 <div key={section.sectionId} className="progress-row">
                   <h3>{section.sectionId}</h3>
                   <label>
-                    Completed Full Rows
+                    Completed Full Steps
                     <input
                       type="number"
                       value={activeProject.progress.completedRowsBySection[section.sectionId] ?? 0}
@@ -2221,7 +2614,7 @@ export default function App() {
                     />
                   </label>
                   <label>
-                    Active Row Number
+                    Active Step Number
                     <input
                       type="number"
                       value={partial?.rowNumber ?? 0}
@@ -2243,7 +2636,7 @@ export default function App() {
                     />
                   </label>
                   <label>
-                    Completed Stitches In Active Row
+                    Completed Stitches In Active Step
                     <input
                       type="number"
                       value={partial?.completedStitches ?? 0}

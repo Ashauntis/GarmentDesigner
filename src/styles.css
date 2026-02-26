@@ -297,6 +297,11 @@ select {
   border-top: 1px dashed #334861;
 }
 
+.stacked-fields {
+  display: grid;
+  gap: 10px;
+}
+
 .field-error {
   margin: 0 0 10px;
   color: #ff9a9a;

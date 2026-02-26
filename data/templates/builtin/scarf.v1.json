@@ -20,7 +20,17 @@
       { "id": "e3", "p1": "p3", "p2": "p4", "label": "bind_off" },
       { "id": "e4", "p1": "p4", "p2": "p1", "label": "side_left" }
     ],
-    "sections": [{ "id": "s1", "name": "body", "pointLoop": ["p1", "p2", "p3", "p4"] }],
+    "sections": [
+      {
+        "id": "s1",
+        "name": "body",
+        "pointLoop": ["p1", "p2", "p3", "p4"],
+        "construction": {
+          "initialMode": "flat",
+          "transitions": []
+        }
+      }
+    ],
     "constraints": []
   }
 }
