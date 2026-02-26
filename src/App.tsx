@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { deriveGaugeCounts } from "./domain/gauge";
 import { applyRounding } from "./domain/rounding";
 import { storageApi } from "./storage/ipc";
@@ -795,6 +795,50 @@ function toggleGridCellProgress(project: Project, rowIndex: number, columnIndex:
   };
 }
 
+function toggleGridRowProgress(project: Project, rowIndex: number): Project {
+  const workspace = project.gridWorkspace;
+  const grid = workspace?.currentGrid;
+  const row = grid?.rows[rowIndex];
+  if (!workspace || !grid || !row) {
+    return project;
+  }
+
+  const stitchColumnIndexes = row.cells
+    .map((cell, columnIndex) => (cell === null ? null : columnIndex))
+    .filter((columnIndex): columnIndex is number => columnIndex !== null);
+  if (stitchColumnIndexes.length === 0) {
+    return project;
+  }
+
+  const completed = new Set(workspace.completedCellKeys);
+  const allCompleted = stitchColumnIndexes.every((columnIndex) => completed.has(gridCellProgressKey(rowIndex, columnIndex)));
+  const nextCompleted = !allCompleted;
+
+  for (const columnIndex of stitchColumnIndexes) {
+    const key = gridCellProgressKey(rowIndex, columnIndex);
+    if (nextCompleted) {
+      completed.add(key);
+    } else {
+      completed.delete(key);
+    }
+  }
+
+  return {
+    ...project,
+    gridWorkspace: {
+      ...workspace,
+      completedCellKeys: [...completed],
+      editHistory: appendGridHistory(workspace.editHistory ?? [], {
+        action: "toggle_progress",
+        rowIndex,
+        columnIndex: null,
+        afterCompleted: nextCompleted,
+        note: `${nextCompleted ? "Marked" : "Unmarked"} progress for row ${row.projectRowNumber}`
+      })
+    }
+  };
+}
+
 function buildInstructionGrid(args: {
   sectionPlans: Array<{ sectionId: string; points: Point[]; rowPlans: RowPlan[] }>;
   stitchesPer10Cm: number;
@@ -808,7 +852,7 @@ function buildInstructionGrid(args: {
   const columnCount = allPoints.length > 0 ? Math.max(1, Math.ceil(globalWidthCm / stitchWidthCm)) : 0;
   const rows: InstructionGrid["rows"] = [];
   let nextCellNumber = 1;
-  let projectRowNumber = 2;
+  let projectRowNumber = 1;
 
   for (const section of sectionPlans) {
     const ys = section.points.map((point) => point.y);
@@ -1020,6 +1064,7 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState<string>("");
   const [instructionsNotice, setInstructionsNotice] = useState<string>("");
   const [gridClickMode, setGridClickMode] = useState<"edit" | "progress">("edit");
+  const [showGridSectionRowOverride, setShowGridSectionRowOverride] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const activeTemplate = useMemo(
@@ -1465,6 +1510,15 @@ export default function App() {
           ? toggleGridCellStitch(previous, rowIndex, columnIndex)
           : toggleGridCellProgress(previous, rowIndex, columnIndex);
       return next;
+    });
+  }
+
+  function handleGridRowHeadingClick(rowIndex: number) {
+    setActiveProject((previous) => {
+      if (!previous) {
+        return previous;
+      }
+      return toggleGridRowProgress(previous, rowIndex);
     });
   }
 
@@ -1947,11 +2001,14 @@ export default function App() {
     );
   }
 
-  function renderInstructionsScreen() {
-    const instructionGrid = activeProject?.gridWorkspace?.currentGrid ?? activeProject?.derived.instructionGrid;
-    const sourceShapeGrid = activeProject?.gridWorkspace?.sourceShapeGrid ?? activeProject?.derived.instructionGrid;
-    const completedCellKeys = new Set(activeProject?.gridWorkspace?.completedCellKeys ?? []);
-    const gridHistory = activeProject?.gridWorkspace?.editHistory ?? [];
+	  function renderInstructionsScreen() {
+	    const instructionGrid = activeProject?.gridWorkspace?.currentGrid ?? activeProject?.derived.instructionGrid;
+	    const sourceShapeGrid = activeProject?.gridWorkspace?.sourceShapeGrid ?? activeProject?.derived.instructionGrid;
+	    const completedCellKeys = new Set(activeProject?.gridWorkspace?.completedCellKeys ?? []);
+	    const gridHistory = activeProject?.gridWorkspace?.editHistory ?? [];
+	    const sectionCount = instructionGrid ? new Set(instructionGrid.rows.map((row) => row.sectionId)).size : 0;
+	    const showSectionGroupLabels = sectionCount > 1;
+	    const showSectionRowNumbers = instructionGrid ? (showGridSectionRowOverride ?? showSectionGroupLabels) : false;
 
     return (
       <section className="surface">
@@ -1976,53 +2033,110 @@ export default function App() {
               <button className="secondary-btn" onClick={handleExportInstructionGridCsv} disabled={!instructionGrid || instructionGrid.rowCount === 0}>
                 Export Grid CSV
               </button>
-              <label className="inline-control">
-                Grid Click Mode
-                <select value={gridClickMode} onChange={(event) => setGridClickMode(event.target.value as "edit" | "progress")}>
-                  <option value="edit">Edit Stitches</option>
-                  <option value="progress">Track Progress</option>
-                </select>
-              </label>
-              <button className="secondary-btn" onClick={handleClearGridProgress} disabled={!activeProject.gridWorkspace || completedCellKeys.size === 0}>
-                Clear Grid Progress
-              </button>
+	              <label className="inline-control">
+	                Grid Click Mode
+	                <select value={gridClickMode} onChange={(event) => setGridClickMode(event.target.value as "edit" | "progress")}>
+	                  <option value="edit">Edit Stitches</option>
+	                  <option value="progress">Track Progress</option>
+	                </select>
+	              </label>
+	              <label className="inline-toggle-control">
+	                <input
+	                  type="checkbox"
+	                  checked={showSectionRowNumbers}
+	                  disabled={!instructionGrid}
+	                  onChange={(event) => setShowGridSectionRowOverride(event.target.checked)}
+	                />
+	                <span>Show Sec Row</span>
+	              </label>
+	              <button className="secondary-btn" onClick={handleClearGridProgress} disabled={!activeProject.gridWorkspace || completedCellKeys.size === 0}>
+	                Clear Grid Progress
+	              </button>
               <button className="primary-btn" onClick={handleSaveProject}>
                 Save Progress
               </button>
             </div>
             {instructionsNotice && <p className="field-note">{instructionsNotice}</p>}
-            {instructionGrid && (
-              <>
-                <p className="grid-summary">
-                  {instructionGrid.rowCount} rows x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
-                  Click cells in <strong>{gridClickMode === "edit" ? "Edit Stitches" : "Track Progress"}</strong> mode.
+	            {instructionGrid && (
+	              <>
+	                <p className="grid-summary">
+	                  {instructionGrid.rowCount} rows x {instructionGrid.columnCount} columns, {instructionGrid.numberedCellCount} numbered cells.
+	                  Click cells in <strong>{gridClickMode === "edit" ? "Edit Stitches" : "Track Progress"}</strong> mode.
+	                  Click the row number to toggle completion for that entire row.
                 </p>
                 {sourceShapeGrid && activeProject.gridWorkspace && (
                   <p className="grid-summary">
                     Shape grid: {sourceShapeGrid.numberedCellCount} cells. Editable grid progress: {completedCellKeys.size} completed cells.
                   </p>
                 )}
-                <div className="grid-preview-wrap">
-                  <table className="grid-preview-table">
-                    <thead>
-                      <tr>
-                        <th>Row</th>
-                        <th>Section</th>
-                        <th>Sec Row</th>
-                        <th>Sts</th>
-                        {Array.from({ length: instructionGrid.columnCount }, (_, index) => (
-                          <th key={`col_${index + 1}`}>C{index + 1}</th>
+	                <div className="grid-preview-wrap">
+	                  <table className="grid-preview-table">
+	                    <thead>
+	                      <tr>
+	                        <th>Row</th>
+	                        {showSectionRowNumbers && <th>Sec Row</th>}
+	                        <th>Sts</th>
+	                        {Array.from({ length: instructionGrid.columnCount }, (_, index) => (
+	                          <th key={`col_${index + 1}`}>C{index + 1}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {instructionGrid.rows.map((row, rowIndex) => (
-                        <tr key={`${row.sectionId}_${row.sectionRowNumber}_${row.projectRowNumber}`}>
-                          <td className="grid-meta-cell">{row.projectRowNumber}</td>
-                          <td className="grid-meta-cell">{row.sectionId}</td>
-                          <td className="grid-meta-cell">{row.sectionRowNumber}</td>
-                          <td className="grid-meta-cell">{row.occupiedStitches}</td>
-                          {row.cells.map((cell, index) => (
+	                      {instructionGrid.rows.map((row, rowIndex) => {
+	                        const startsSection = rowIndex === 0 || instructionGrid.rows[rowIndex - 1]?.sectionId !== row.sectionId;
+	                        const sectionLabelColSpan = (showSectionRowNumbers ? 3 : 2) + instructionGrid.columnCount;
+
+	                        return (
+	                          <Fragment key={`${row.sectionId}_${row.sectionRowNumber}_${row.projectRowNumber}`}>
+	                          {showSectionGroupLabels && startsSection && (
+	                            <tr className="grid-section-label-row">
+	                              <td colSpan={sectionLabelColSpan}>Section: {row.sectionId}</td>
+	                            </tr>
+	                          )}
+	                          <tr>
+	                          {(() => {
+	                            const stitchColumnIndexes = row.cells
+	                              .map((cell, columnIndex) => (cell === null ? null : columnIndex))
+                              .filter((columnIndex): columnIndex is number => columnIndex !== null);
+                            const completedCount = stitchColumnIndexes.filter((columnIndex) =>
+                              completedCellKeys.has(gridCellProgressKey(rowIndex, columnIndex))
+                            ).length;
+                            const rowHasStitches = stitchColumnIndexes.length > 0;
+                            const rowComplete = rowHasStitches && completedCount === stitchColumnIndexes.length;
+                            const rowPartial = completedCount > 0 && !rowComplete;
+
+                            return (
+                              <td
+                                className={[
+                                  "grid-meta-cell",
+                                  "grid-row-toggle-cell",
+                                  rowComplete ? "completed" : "",
+                                  rowPartial ? "partial" : ""
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                                onClick={() => handleGridRowHeadingClick(rowIndex)}
+                                role="button"
+                                tabIndex={rowHasStitches ? 0 : -1}
+                                onKeyDown={(event) => {
+                                  if (!rowHasStitches) {
+                                    return;
+                                  }
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    handleGridRowHeadingClick(rowIndex);
+                                  }
+                                }}
+                                aria-label={`Toggle progress for row ${row.projectRowNumber}`}
+                                aria-pressed={rowComplete}
+                              >
+	                                {row.projectRowNumber}
+	                              </td>
+	                            );
+	                          })()}
+	                          {showSectionRowNumbers && <td className="grid-meta-cell">{row.sectionRowNumber}</td>}
+	                          <td className="grid-meta-cell">{row.occupiedStitches}</td>
+	                          {row.cells.map((cell, index) => (
                             <td
                               key={`${row.projectRowNumber}_${index}`}
                               className={[
@@ -2044,14 +2158,16 @@ export default function App() {
                               }}
                               aria-label={`Grid cell row ${row.projectRowNumber}, column ${index + 1}${cell === null ? ", empty" : `, stitch ${cell}`}`}
                             >
-                              {cell ?? ""}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+	                              {cell ?? ""}
+	                            </td>
+	                          ))}
+	                        </tr>
+	                        </Fragment>
+	                        );
+	                      })}
+	                    </tbody>
+	                  </table>
+	                </div>
                 <details className="legacy-instructions">
                   <summary>Grid edit history ({gridHistory.length})</summary>
                   {gridHistory.length === 0 && <p className="grid-history-empty">No grid edits yet.</p>}

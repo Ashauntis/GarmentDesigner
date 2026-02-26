@@ -277,6 +277,20 @@ select {
   margin-top: 4px;
 }
 
+.inline-toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding-bottom: 6px;
+  color: #d4dfec;
+  user-select: none;
+}
+
+.inline-toggle-control input[type="checkbox"] {
+  margin: 0;
+}
+
 .progress-row {
   margin-top: 10px;
   padding-top: 10px;
@@ -333,10 +347,41 @@ select {
   color: #dbe8f6;
 }
 
+.grid-section-label-row td {
+  background: #0f2234;
+  color: #aecdff;
+  text-align: left;
+  font-weight: 600;
+}
+
 .grid-meta-cell {
   background: #111e2d;
   color: #cddced;
   text-align: left;
+}
+
+.grid-row-toggle-cell {
+  cursor: pointer;
+  user-select: none;
+}
+
+.grid-row-toggle-cell:hover {
+  background: #1a2f46;
+}
+
+.grid-row-toggle-cell.partial {
+  background: #3a3520;
+  color: #fff2c7;
+}
+
+.grid-row-toggle-cell.completed {
+  background: #285840;
+  color: #ecfff3;
+}
+
+.grid-row-toggle-cell:focus {
+  outline: 2px solid #89c3ff;
+  outline-offset: -2px;
 }
 
 .grid-stitch-cell {
